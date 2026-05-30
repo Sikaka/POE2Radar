@@ -7,7 +7,7 @@ sends keystrokes. Forked from a PoE1 framework, since rewritten around the live 
 ## Non-negotiable rules
 
 **PoE2, not PoE1.** Offsets are PoE2-specific and drift with patches. Validated values live in
-`Game/Poe2Offsets.cs`; `resources/community-offsets.md` documents them + the discovery workflow.
+`Game/Poe2Offsets.cs` (marked `✓` when confirmed live); re-discover via the `POE2Radar.Research` probes.
 
 **Stay external.** Memory access via `OpenProcess` + `ReadProcessMemory`. **Never** inject into the
 PoE2 process — no DLL injection, no function hooking, no packet manipulation.

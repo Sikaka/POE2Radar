@@ -64,10 +64,9 @@ Three projects:
 
 ## Offsets & patches
 
-PoE2 memory offsets drift with game patches. Validated offsets live in `Game/Poe2Offsets.cs` and
-are documented in [`resources/community-offsets.md`](resources/community-offsets.md). After a patch
-that breaks reads, use the `POE2Radar.Research` probes to re-discover them (the doc describes the
-workflow). There is no live oracle for PoE2, so validation is value-scan / manual.
+PoE2 memory offsets drift with game patches. Validated offsets live in `Game/Poe2Offsets.cs`
+(each marked `✓` when confirmed live). After a patch that breaks reads, use the `POE2Radar.Research`
+probes to re-discover them. There is no live oracle for PoE2, so validation is value-scan / manual.
 
 ## Credits
 
