@@ -30,6 +30,23 @@ public sealed class OverlayWindow : IDisposable
     private nint _hInstance;
     private OverlayNative.WndProc _wndProcDelegate = null!;
 
+    // Click-through state. The window is created WS_EX_TRANSPARENT (clicks pass through to PoE).
+    // RadarApp flips this only while the cursor is over a clickable overlay region (the legend).
+    // WS_EX_NOACTIVATE is set permanently so a captured click never steals focus from PoE.
+    private bool _clickThrough = true;
+
+    /// <summary>
+    /// Raised on WM_LBUTTONDOWN with the click's CLIENT coordinates (x, y). The window only
+    /// receives this message while it is NOT click-through (see <see cref="SetClickThrough"/>),
+    /// i.e. only while the cursor is over a clickable overlay region. Purely local UI — nothing
+    /// is ever sent to the game.
+    /// </summary>
+    public Action<int, int>? OnClientClick;
+
+    private const uint WmTrayCallback = OverlayNative.WM_APP + 1;
+    private const uint MenuExitId = 1;
+    private bool _trayAdded;
+
     private ID2D1Factory? _d2dFactory;
     private IDWriteFactory? _dwriteFactory;
     private ID2D1DCRenderTarget? _renderTarget;
@@ -44,6 +61,9 @@ public sealed class OverlayWindow : IDisposable
     public int OriginX { get; private set; }
     public int OriginY { get; private set; }
     public bool IsValid => _hwnd != 0 && _renderTarget != null;
+
+    /// <summary>The overlay's window handle (for client-coord conversion of the cursor, etc.).</summary>
+    public nint Handle => _hwnd;
 
     /// <summary>
     /// The render target. Same shape as before (ID2D1RenderTarget) but backed by the DIB
@@ -67,7 +87,51 @@ public sealed class OverlayWindow : IDisposable
         _wndProcDelegate = WndProc;
         RegisterWindowClass();
         CreateOverlayHwnd();
+        AddTrayIcon();
         InitializeDirect2D();
+    }
+
+    /// <summary>Add a system-tray icon so users have an obvious way to quit (right-click → Exit).</summary>
+    private void AddTrayIcon()
+    {
+        var nid = new OverlayNative.NOTIFYICONDATAW
+        {
+            cbSize           = (uint)Marshal.SizeOf<OverlayNative.NOTIFYICONDATAW>(),
+            hWnd             = _hwnd,
+            uID              = 1,
+            uFlags           = OverlayNative.NIF_MESSAGE | OverlayNative.NIF_ICON | OverlayNative.NIF_TIP,
+            uCallbackMessage = WmTrayCallback,
+            hIcon            = OverlayNative.LoadIconW(0, OverlayNative.IDI_APPLICATION),
+            szTip            = "POE2Radar — right-click to Exit",
+            szInfo           = "",
+            szInfoTitle      = "",
+        };
+        _trayAdded = OverlayNative.Shell_NotifyIconW(OverlayNative.NIM_ADD, ref nid);
+    }
+
+    private void RemoveTrayIcon()
+    {
+        if (!_trayAdded) return;
+        var nid = new OverlayNative.NOTIFYICONDATAW
+        {
+            cbSize = (uint)Marshal.SizeOf<OverlayNative.NOTIFYICONDATAW>(),
+            hWnd = _hwnd, uID = 1, szTip = "", szInfo = "", szInfoTitle = "",
+        };
+        OverlayNative.Shell_NotifyIconW(OverlayNative.NIM_DELETE, ref nid);
+        _trayAdded = false;
+    }
+
+    private void ShowTrayMenu()
+    {
+        var menu = OverlayNative.CreatePopupMenu();
+        if (menu == 0) return;
+        OverlayNative.AppendMenuW(menu, OverlayNative.MF_STRING, MenuExitId, "Exit POE2Radar");
+        OverlayNative.GetCursorPos(out var pt);
+        OverlayNative.SetForegroundWindow(_hwnd); // standard tray-menu idiom so it dismisses correctly
+        var cmd = OverlayNative.TrackPopupMenu(menu,
+            OverlayNative.TPM_RIGHTBUTTON | OverlayNative.TPM_RETURNCMD, pt.X, pt.Y, 0, _hwnd, 0);
+        OverlayNative.DestroyMenu(menu);
+        if (cmd == (int)MenuExitId) OverlayNative.PostQuitMessage(0);
     }
 
     private unsafe void RegisterWindowClass()
@@ -232,6 +296,26 @@ public sealed class OverlayWindow : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Toggle whether the overlay is click-through. When <paramref name="value"/> is true (default
+    /// state) the window has <c>WS_EX_TRANSPARENT</c> and all clicks fall through to PoE; when false
+    /// the window captures clicks (and receives <c>WM_LBUTTONDOWN</c>). <c>WS_EX_NOACTIVATE</c> stays
+    /// set throughout, so capturing a click never steals keyboard focus from the game. Only touches
+    /// this window's own ex-style — no input is ever sent to the game. No-ops when unchanged so we
+    /// don't call SetWindowLongPtr every frame.
+    /// </summary>
+    public void SetClickThrough(bool value)
+    {
+        if (value == _clickThrough || _hwnd == 0) return;
+        _clickThrough = value;
+
+        var ex = (uint)OverlayNative.GetWindowLongPtrW(_hwnd, OverlayNative.GWL_EXSTYLE);
+        ex = value
+            ? ex | OverlayNative.WS_EX_TRANSPARENT
+            : ex & ~OverlayNative.WS_EX_TRANSPARENT;
+        OverlayNative.SetWindowLongPtrW(_hwnd, OverlayNative.GWL_EXSTYLE, (nint)ex);
+    }
+
     public bool PumpMessages()
     {
         while (OverlayNative.PeekMessageW(out var msg, 0, 0, 0, OverlayNative.PM_REMOVE))
@@ -245,6 +329,21 @@ public sealed class OverlayWindow : IDisposable
 
     private nint WndProc(nint hwnd, uint msg, nuint wParam, nint lParam)
     {
+        if (msg == WmTrayCallback)
+        {
+            var ev = (uint)(lParam & 0xFFFF);
+            if (ev is OverlayNative.WM_RBUTTONUP or OverlayNative.WM_LBUTTONUP) ShowTrayMenu();
+            return 0;
+        }
+        if (msg == OverlayNative.WM_LBUTTONDOWN)
+        {
+            // Only delivered while NOT click-through (cursor is over a clickable overlay region).
+            // lParam packs client coords: low word = x, high word = y (both signed 16-bit).
+            var x = (short)(lParam & 0xFFFF);
+            var y = (short)((lParam >> 16) & 0xFFFF);
+            OnClientClick?.Invoke(x, y);
+            return 0;
+        }
         if (msg == OverlayNative.WM_DESTROY)
         {
             OverlayNative.PostQuitMessage(0);
@@ -255,6 +354,7 @@ public sealed class OverlayWindow : IDisposable
 
     public void Dispose()
     {
+        RemoveTrayIcon();
         _renderTarget?.Dispose();
         _dwriteFactory?.Dispose();
         _d2dFactory?.Dispose();

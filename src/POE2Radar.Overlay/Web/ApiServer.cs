@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using POE2Radar.Core.Game;
+using POE2Radar.Overlay.Config;
 
 namespace POE2Radar.Overlay.Web;
 
@@ -9,25 +10,49 @@ namespace POE2Radar.Overlay.Web;
 /// Tiny read-only HTTP API for live troubleshooting (the PoE2 stand-in for POEMCP). Serves the
 /// latest <see cref="RadarState"/> published by <see cref="RadarApp"/> each world tick.
 ///
-/// Endpoints (localhost:7777):
+/// Endpoints (localhost:7777, read-only — no CORS header, so only the same-origin dashboard can read them):
+///   GET /                         — the web dashboard (see <see cref="DashboardHtml"/>)
+///   GET /health                   — liveness probe
 ///   GET /state                    — player, area, map visibility, entity counts by category
 ///   GET /entities                 — all entities (id, category, metadata, pos, hp, dist)
 ///       ?category=Monster         — filter by category (case-insensitive)
 ///       &amp;alive=true               — only entities with HP &gt; 0
 ///       &amp;radius=80                — only within N grid units of the player
 ///       &amp;limit=50                 — cap results (default 500)
+///   GET  /api/settings            — current radar/visual settings (+ read-only flask mirror)
+///   POST /api/settings            — write whitelisted radar/visual settings only (flags + calibration);
+///                                   loopback-Host-gated; never exposes flask/automation writes
+///   GET  /api/nav                 — current navigation-target selection (ids + color slots)
+///   POST /api/nav                 — toggle/clear a navigation target (draw-only; never sends input to
+///                                   the game); loopback-Host-gated like POST /api/settings
 /// </summary>
 public sealed class ApiServer : IDisposable
 {
     private readonly HttpListener _listener = new();
     private readonly Func<RadarState> _state;
+    private readonly RadarSettings _settings;
+    // Navigation selection controller, supplied by RadarApp. These only mutate the draw-only path
+    // selection — they NEVER send input to the game.
+    private readonly Func<IReadOnlyList<(string Id, int Slot)>> _navGet;
+    private readonly Action<string> _navToggle;
+    private readonly Action _navClear;
     private volatile bool _running;
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
-    public ApiServer(Func<RadarState> state, int port = 7777)
+    public ApiServer(
+        Func<RadarState> state,
+        RadarSettings settings,
+        Func<IReadOnlyList<(string Id, int Slot)>> navGet,
+        Action<string> navToggle,
+        Action navClear,
+        int port = 7777)
     {
         _state = state;
+        _settings = settings;
+        _navGet = navGet;
+        _navToggle = navToggle;
+        _navClear = navClear;
         _listener.Prefixes.Add($"http://localhost:{port}/");
     }
 
@@ -59,7 +84,11 @@ public sealed class ApiServer : IDisposable
 
         switch (path)
         {
-            case "/" or "/health":
+            case "/":
+                WriteHtml(ctx, DashboardHtml.Page);
+                break;
+
+            case "/health":
                 Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, inGame = s.InGame }, Json));
                 break;
 
@@ -69,8 +98,9 @@ public sealed class ApiServer : IDisposable
                     .ToDictionary(g => g.Key.ToString(), g => g.Count());
                 Write(ctx, 200, JsonSerializer.Serialize(new
                 {
+                    // Character name + level intentionally omitted (privacy: this endpoint is local
+                    // but unauthenticated, and screenshots/streams shouldn't leak the character).
                     s.InGame, areaCode = s.AreaCode, areaHash = s.AreaHash, areaLevel = s.AreaLevel,
-                    character = s.CharName, charLevel = s.CharLevel,
                     mapVisible = s.MapVisible, zoom = s.Zoom,
                     hpPct = s.HpPct, manaPct = s.ManaPct, autoFlask = s.AutoFlask, flask = s.FlaskNote,
                     player = new { x = s.Player.X, y = s.Player.Y },
@@ -88,7 +118,7 @@ public sealed class ApiServer : IDisposable
                     .OrderBy(l => Dist(l.Center, s.Player))
                     .Select(l => new
                     {
-                        name = l.Name, path = l.Path, tiles = l.TileCount,
+                        name = l.Name, curatedName = l.CuratedName, path = l.Path, tiles = l.TileCount,
                         x = l.Center.X, y = l.Center.Y, dist = (int)Dist(l.Center, s.Player),
                     });
                 Write(ctx, 200, JsonSerializer.Serialize(list, Json));
@@ -124,10 +154,192 @@ public sealed class ApiServer : IDisposable
                 break;
             }
 
+            case "/api/settings":
+            {
+                if (ctx.Request.HttpMethod == "GET")
+                {
+                    Write(ctx, 200, JsonSerializer.Serialize(ReadSettings(), Json));
+                }
+                else if (ctx.Request.HttpMethod == "POST")
+                {
+                    // CSRF / DNS-rebinding guard: only honor writes whose Host header is the loopback
+                    // name we bind to. A page on another origin that rebinds DNS to 127.0.0.1 still
+                    // sends its own hostname in Host, so this rejects drive-by writes. (Reads are
+                    // already unreadable cross-origin since we emit no Access-Control-Allow-Origin.)
+                    if (!IsLoopbackHost(ctx.Request))
+                    {
+                        Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json));
+                        break;
+                    }
+                    var applied = ApplySettings(ReadBody(ctx));
+                    Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, applied, settings = ReadSettings() }, Json));
+                }
+                else
+                {
+                    Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json));
+                }
+                break;
+            }
+
+            case "/api/nav":
+            {
+                if (ctx.Request.HttpMethod == "GET")
+                {
+                    Write(ctx, 200, JsonSerializer.Serialize(new { selected = NavSelection() }, Json));
+                }
+                else if (ctx.Request.HttpMethod == "POST")
+                {
+                    // Same CSRF / DNS-rebinding guard as POST /api/settings: only honor writes whose
+                    // Host header is our loopback name. (This is draw-only selection — it never sends
+                    // input to the game — but we still gate it so a cross-origin page can't drive it.)
+                    if (!IsLoopbackHost(ctx.Request))
+                    {
+                        Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json));
+                        break;
+                    }
+                    ApplyNav(ReadBody(ctx));
+                    Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, selected = NavSelection() }, Json));
+                }
+                else
+                {
+                    Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json));
+                }
+                break;
+            }
+
             default:
                 Write(ctx, 404, JsonSerializer.Serialize(new { error = "not found", path }, Json));
                 break;
         }
+    }
+
+    /// <summary>
+    /// The settings the dashboard may read AND write. Covers radar/visual options plus auto-flask
+    /// tuning (thresholds, cooldowns, keys). All writes are loopback-Host-gated (see Handle), so a
+    /// cross-origin site can't reach them. The API port is read-only here (changing it needs a
+    /// restart). This object also doubles as the GET payload.
+    /// </summary>
+    private object ReadSettings() => new
+    {
+        hideJunk = _settings.HideJunk,
+        showPath = _settings.ShowPath,
+        useCuratedLandmarks = _settings.UseCuratedLandmarks,
+        showMonsters = _settings.ShowMonsters,
+        showTerrain = _settings.ShowTerrain,
+        hpBarNormal = _settings.HpBarNormal,
+        hpBarMagic = _settings.HpBarMagic,
+        hpBarRare = _settings.HpBarRare,
+        hpBarUnique = _settings.HpBarUnique,
+        scaleMul = _settings.ScaleMul,
+        offX = _settings.OffX,
+        offY = _settings.OffY,
+        lifeThresholdPct = _settings.LifeThresholdPct,
+        manaThresholdPct = _settings.ManaThresholdPct,
+        lifeCooldownMs = _settings.LifeCooldownMs,
+        manaCooldownMs = _settings.ManaCooldownMs,
+        lifeKey = _settings.LifeKey,
+        manaKey = _settings.ManaKey,
+        apiPort = _settings.ApiPort, // display only — changing it needs a restart
+    };
+
+    /// <summary>Apply only whitelisted radar/visual keys from a posted JSON object; persists on change.</summary>
+    private string[] ApplySettings(string body)
+    {
+        var applied = new List<string>();
+        if (string.IsNullOrWhiteSpace(body)) return applied.ToArray();
+
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return applied.ToArray();
+
+        foreach (var p in root.EnumerateObject())
+        {
+            switch (p.Name)
+            {
+                case "hideJunk" when TryBool(p.Value, out var b): _settings.HideJunk = b; applied.Add(p.Name); break;
+                case "showPath" when TryBool(p.Value, out var b): _settings.ShowPath = b; applied.Add(p.Name); break;
+                case "useCuratedLandmarks" when TryBool(p.Value, out var b): _settings.UseCuratedLandmarks = b; applied.Add(p.Name); break;
+                case "scaleMul" when TryFloat(p.Value, out var f): _settings.ScaleMul = f; applied.Add(p.Name); break;
+                case "offX" when TryFloat(p.Value, out var f): _settings.OffX = f; applied.Add(p.Name); break;
+                case "offY" when TryFloat(p.Value, out var f): _settings.OffY = f; applied.Add(p.Name); break;
+                case "showMonsters" when TryBool(p.Value, out var b): _settings.ShowMonsters = b; applied.Add(p.Name); break;
+                case "showTerrain" when TryBool(p.Value, out var b): _settings.ShowTerrain = b; applied.Add(p.Name); break;
+                case "hpBarNormal" when TryBool(p.Value, out var b): _settings.HpBarNormal = b; applied.Add(p.Name); break;
+                case "hpBarMagic" when TryBool(p.Value, out var b): _settings.HpBarMagic = b; applied.Add(p.Name); break;
+                case "hpBarRare" when TryBool(p.Value, out var b): _settings.HpBarRare = b; applied.Add(p.Name); break;
+                case "hpBarUnique" when TryBool(p.Value, out var b): _settings.HpBarUnique = b; applied.Add(p.Name); break;
+                case "lifeThresholdPct" when TryFloat(p.Value, out var f): _settings.LifeThresholdPct = Math.Clamp(f, 0f, 100f); applied.Add(p.Name); break;
+                case "manaThresholdPct" when TryFloat(p.Value, out var f): _settings.ManaThresholdPct = Math.Clamp(f, 0f, 100f); applied.Add(p.Name); break;
+                case "lifeCooldownMs" when TryInt(p.Value, out var n): _settings.LifeCooldownMs = Math.Clamp(n, 0, 60000); applied.Add(p.Name); break;
+                case "manaCooldownMs" when TryInt(p.Value, out var n): _settings.ManaCooldownMs = Math.Clamp(n, 0, 60000); applied.Add(p.Name); break;
+                case "lifeKey" when TryInt(p.Value, out var n): _settings.LifeKey = Math.Clamp(n, 1, 255); applied.Add(p.Name); break;
+                case "manaKey" when TryInt(p.Value, out var n): _settings.ManaKey = Math.Clamp(n, 1, 255); applied.Add(p.Name); break;
+                // Anything else (apiPort, unknown keys) is ignored by design.
+            }
+        }
+
+        if (applied.Count > 0) _settings.Save();
+        return applied.ToArray();
+    }
+
+    /// <summary>The navigation selection as a list of {id, slot} objects (for the GET/POST payloads).</summary>
+    private object[] NavSelection()
+        => _navGet().Select(s => (object)new { id = s.Id, slot = s.Slot }).ToArray();
+
+    /// <summary>Apply a posted nav command: {"toggle":"&lt;id&gt;"} toggles that target; {"clear":true}
+    /// clears the whole selection. Anything else is ignored. Draw-only — sends nothing to the game.</summary>
+    private void ApplyNav(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return;
+
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return;
+
+        if (root.TryGetProperty("clear", out var clear) && clear.ValueKind == JsonValueKind.True)
+        {
+            _navClear();
+            return;
+        }
+        if (root.TryGetProperty("toggle", out var toggle) && toggle.ValueKind == JsonValueKind.String)
+        {
+            var id = toggle.GetString();
+            if (!string.IsNullOrEmpty(id)) _navToggle(id);
+        }
+    }
+
+    private static bool TryBool(JsonElement e, out bool v)
+    {
+        if (e.ValueKind == JsonValueKind.True) { v = true; return true; }
+        if (e.ValueKind == JsonValueKind.False) { v = false; return true; }
+        v = false; return false;
+    }
+
+    private static bool TryFloat(JsonElement e, out float v)
+    {
+        if (e.ValueKind == JsonValueKind.Number && e.TryGetSingle(out v)) return true;
+        v = 0f; return false;
+    }
+
+    private static bool TryInt(JsonElement e, out int v)
+    {
+        if (e.ValueKind == JsonValueKind.Number && e.TryGetInt32(out v)) return true;
+        v = 0; return false;
+    }
+
+
+    private static bool IsLoopbackHost(HttpListenerRequest req)
+    {
+        var host = req.UserHostName; // includes port, e.g. "localhost:7777"
+        if (string.IsNullOrEmpty(host)) return false;
+        var name = host.Split(':')[0];
+        return name is "localhost" or "127.0.0.1" or "[::1]" or "::1";
+    }
+
+    private static string ReadBody(HttpListenerContext ctx)
+    {
+        using var r = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding);
+        return r.ReadToEnd();
     }
 
     private static float Dist(System.Numerics.Vector2 a, System.Numerics.Vector2 b)
@@ -138,6 +350,20 @@ public sealed class ApiServer : IDisposable
         var bytes = Encoding.UTF8.GetBytes(body);
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json";
+        // Read-only API: no Access-Control-Allow-Origin header, so a browser on another origin
+        // cannot read these responses. The dashboard is served same-origin from "/".
+        ctx.Response.Headers["Cache-Control"] = "no-store";
+        ctx.Response.ContentLength64 = bytes.Length;
+        ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+        ctx.Response.OutputStream.Close();
+    }
+
+    private static void WriteHtml(HttpListenerContext ctx, string html)
+    {
+        var bytes = Encoding.UTF8.GetBytes(html);
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = "text/html; charset=utf-8";
+        ctx.Response.Headers["Cache-Control"] = "no-store";
         ctx.Response.ContentLength64 = bytes.Length;
         ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
         ctx.Response.OutputStream.Close();

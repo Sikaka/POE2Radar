@@ -51,8 +51,10 @@ public sealed class Poe2Live
 
     public readonly record struct MapUi(bool IsVisible, float ShiftX, float ShiftY, float Zoom);
 
-    /// <summary>A static tile-based landmark: a notable terrain feature and its grid centroid.</summary>
-    public readonly record struct Landmark(string Name, string Path, System.Numerics.Vector2 Center, int TileCount);
+    /// <summary>A static tile-based landmark: a notable terrain feature and its grid centroid.
+    /// <paramref name="CuratedName"/> is an optional curated friendly label (null when none matches);
+    /// <paramref name="Name"/> is the derived-from-path fallback.</summary>
+    public readonly record struct Landmark(string Name, string Path, System.Numerics.Vector2 Center, int TileCount, string? CuratedName = null);
 
     public sealed record TerrainData(byte[] Walkable, int Width, int Height);
 
@@ -279,6 +281,7 @@ public sealed class Poe2Live
     private List<Landmark> ScanLandmarks(nint areaInstance)
     {
         var result = new List<Landmark>();
+        var areaCode = AreaCode(areaInstance);
         var terrain = areaInstance + Poe2.AreaInstance.TerrainMetadata;
         if (!_reader.TryReadStruct<long>(terrain + Poe2.Terrain.TotalTiles, out var tilesX) || tilesX <= 0) return result;
         var first = Ptr(terrain + Poe2.Terrain.TileDetailsPtr);
@@ -301,7 +304,12 @@ public sealed class Poe2Live
             if (!pathCache.TryGetValue(tgtFile, out var path))
             {
                 var p = ReadStdWString(tgtFile + Poe2.TgtFileStruct.TgtPath);
-                path = IsInterestingLandmark(p) ? p : null;
+                // Surface a tile as a navigable landmark if the curated community list names it for
+                // this area, OR it matches the generic keyword filter (fallback for uncurated areas).
+                // The curated list is the primary whitelist: it covers area transitions, vendors, NPCs,
+                // etc. whose tile paths carry none of the keywords.
+                var keep = CustomLandmarkData.TryMatch(areaCode, p) != null || IsInterestingLandmark(p);
+                path = keep ? p : null;
                 pathCache[tgtFile] = path;
             }
             if (path is null) continue;
@@ -315,7 +323,8 @@ public sealed class Poe2Live
 
         foreach (var (path, n) in num)
             result.Add(new Landmark(LandmarkName(path), path,
-                new System.Numerics.Vector2((float)(sumX[path] / n), (float)(sumY[path] / n)), n));
+                new System.Numerics.Vector2((float)(sumX[path] / n), (float)(sumY[path] / n)), n,
+                CustomLandmarkData.TryMatch(areaCode, path)));
         return result;
     }
 

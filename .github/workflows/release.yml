@@ -30,7 +30,10 @@ jobs:
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=none -p:DebugSymbols=false `
+            -p:Deterministic=true -p:ContinuousIntegrationBuild=true `
             -o publish
+          Remove-Item publish/*.pdb -Force -ErrorAction SilentlyContinue
 
       - name: Package
         shell: pwsh

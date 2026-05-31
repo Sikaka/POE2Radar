@@ -430,9 +430,9 @@ static int RunTiles(ProcessHandle process, MemoryReader reader)
         .OrderByDescending(k => k.Value))
         Console.WriteLine($"  {kv.Value,4}  {kv.Key}");
 
-    Console.WriteLine("\n--- top 25 tile paths by count ---");
-    foreach (var kv in byPath.OrderByDescending(k => k.Value).Take(25))
-        Console.WriteLine($"  {kv.Value,4}  {kv.Key}");
+    Console.WriteLine("\n--- ALL distinct tile paths (alphabetical) ---");
+    foreach (var kv in byPath.OrderBy(k => k.Key, StringComparer.Ordinal))
+        Console.WriteLine($"  {kv.Value,5}  {kv.Key}");
 
     if (sampleTgt != 0)
     {

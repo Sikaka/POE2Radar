@@ -11,4 +11,8 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Game\CustomLandmarks.json" />
+  </ItemGroup>
+
 </Project>

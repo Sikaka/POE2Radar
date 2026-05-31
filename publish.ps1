@@ -11,7 +11,12 @@ dotnet publish "$root/src/POE2Radar.Overlay/POE2Radar.Overlay.csproj" `
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true `
+    -p:DebugType=none -p:DebugSymbols=false `
+    -p:Deterministic=true -p:ContinuousIntegrationBuild=true `
     -o "$root/publish"
+
+# Belt-and-suspenders: never ship .pdb (they embed the build path / dev username).
+Remove-Item "$root/publish/*.pdb" -Force -ErrorAction SilentlyContinue
 
 Copy-Item "$root/README.md", "$root/LICENSE" "$root/publish/" -Force
 $zip = "$root/POE2Radar-$Version-win-x64.zip"

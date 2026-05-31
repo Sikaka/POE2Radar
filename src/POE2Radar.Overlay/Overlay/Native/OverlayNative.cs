@@ -45,6 +45,7 @@ internal static partial class OverlayNative
     public const uint WM_QUIT    = 0x0012;
     public const uint WM_PAINT   = 0x000F;
     public const uint WM_SIZE    = 0x0005;
+    public const uint WM_LBUTTONDOWN = 0x0201;
 
     // Class styles
     public const uint CS_HREDRAW = 0x0002;
@@ -254,4 +255,67 @@ internal static partial class OverlayNative
     public static extern bool UpdateLayeredWindow(
         nint hwnd, nint hdcDst, ref POINT pptDst, ref SIZE psize,
         nint hdcSrc, ref POINT pptSrc, uint crKey, ref BLENDFUNCTION pblend, uint dwFlags);
+
+    // ── System tray icon + context menu (for an obvious "Exit") ───────────────
+
+    public const uint WM_APP        = 0x8000;
+    public const uint WM_LBUTTONUP  = 0x0202;
+    public const uint WM_RBUTTONUP  = 0x0205;
+    public const uint NIM_ADD       = 0x0;
+    public const uint NIM_DELETE    = 0x2;
+    public const uint NIF_MESSAGE   = 0x1;
+    public const uint NIF_ICON      = 0x2;
+    public const uint NIF_TIP       = 0x4;
+    public const uint MF_STRING     = 0x0;
+    public const uint TPM_RIGHTBUTTON = 0x0002;
+    public const uint TPM_RETURNCMD   = 0x0100;
+    public static readonly nint IDI_APPLICATION = 32512;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct NOTIFYICONDATAW
+    {
+        public uint cbSize;
+        public nint hWnd;
+        public uint uID;
+        public uint uFlags;
+        public uint uCallbackMessage;
+        public nint hIcon;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+        public uint dwState;
+        public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+        public uint uVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public nint hBalloonIcon;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool Shell_NotifyIconW(uint dwMessage, ref NOTIFYICONDATAW lpData);
+
+    [DllImport("user32.dll")]
+    public static extern nint LoadIconW(nint hInstance, nint lpIconName);
+
+    [DllImport("user32.dll")]
+    public static extern nint CreatePopupMenu();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool AppendMenuW(nint hMenu, uint uFlags, nuint uIDNewItem, string lpNewItem);
+
+    [DllImport("user32.dll")]
+    public static extern bool DestroyMenu(nint hMenu);
+
+    [DllImport("user32.dll")]
+    public static extern int TrackPopupMenu(nint hMenu, uint uFlags, int x, int y, int nReserved, nint hWnd, nint prcRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT lpPoint);
+
+    /// <summary>Convert a screen-space point to the window's client coordinates (in/out via ref).</summary>
+    [DllImport("user32.dll")]
+    public static extern bool ScreenToClient(nint hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(nint hWnd);
 }

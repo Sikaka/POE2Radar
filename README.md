@@ -16,12 +16,19 @@ quality-of-life feature.
   projected player-centered onto the game's map.
 - **Entity radar** — alive enemies (red), NPCs, chests, area transitions, other players, and
   **POIs** (anything the game flags with a minimap icon) shown with a ring.
-- **Tile landmarks** — static features pulled from terrain tile data (boss arena, treasure, …),
-  shown the moment you enter an area, before exploring.
+- **Tile landmarks** — static features pulled from terrain tile data (boss arenas, area
+  transitions, …), shown the moment you enter an area, with community-curated friendly names.
+- **Navigation** — pick any landmark, POI, or entity as a destination and the overlay draws a
+  smoothed A* route to it: on the in-game map when it's open, or as waypoints on the world ground
+  when it's closed. Multi-select (each route its own color). Auto-nav patterns (e.g. the expedition
+  encounter) re-acquire their target automatically in each new zone.
 - **Auto-flask** (opt-in input) — presses the life/mana flask key below a HP/mana threshold.
   Hard-gated: only when PoE2 is the foreground window, with cooldowns and an **F8 kill-switch**.
-- **Live state API** — a small HTTP server (`localhost:7777`) for troubleshooting:
-  `GET /state`, `GET /entities` (filters: `category`, `alive`, `radius`, `limit`), `GET /landmarks`.
+- **Web dashboard** (`http://localhost:7777`, or **F12** in-game) — a local control panel: a
+  searchable list of every entity/landmark you can click to navigate to, plus a settings tab
+  (radar display toggles, monster HP-bar visibility, map calibration, auto-flask tuning). Served
+  same-origin only; setting/navigation writes are loopback-gated. Read endpoints: `GET /state`,
+  `/entities`, `/landmarks`.
 
 ## Download (no build required)
 
@@ -48,8 +55,12 @@ src\POE2Radar.Overlay\bin\Debug\net10.0-windows\POE2Radar.Overlay.exe
 
 Reading another process generally requires running the overlay **as Administrator**.
 
-Hotkeys: **F8** toggles auto-flask; **PageUp/PageDown** scale and **arrow keys** offset the map
-projection (for calibration); **Home** resets.
+To **exit**: right-click the **POE2Radar system-tray icon → Exit**, or press **F9** (or close the
+console window).
+
+Hotkeys: **F8** toggles auto-flask; **F9** quits; **F12** opens the web dashboard; **F6** routes to
+the nearest landmark/POI and **F7** clears routes. Map calibration and all other settings live in
+the dashboard (there are no calibration hotkeys, to avoid accidental presses).
 
 ## Architecture
 
