@@ -334,6 +334,11 @@ public sealed class ApiServer : IDisposable
                 m.Match = m.Match.Where(x => !string.IsNullOrWhiteSpace(x))
                                  .Select(x => x.Trim() is var t && t.Length > 64 ? t[..64] : x.Trim())
                                  .Take(8).ToList();
+                // Keep only valid EntityCategory names (canonicalized), deduped. Empty = applies to all.
+                m.Categories ??= new List<string>();
+                m.Categories = m.Categories
+                    .Select(x => Enum.TryParse<Poe2Live.EntityCategory>(x, ignoreCase: true, out var c) ? c.ToString() : null)
+                    .Where(x => x != null).Distinct().ToList()!;
             }
             styles = parsed;
             return true;
@@ -348,6 +353,10 @@ public sealed class ApiServer : IDisposable
         s.Opacity = Math.Clamp(s.Opacity, 0f, 1f);
         s.Size = Math.Clamp(s.Size, 0.5f, 40f);
     }
+
+    /// <summary>Return <paramref name="c"/> upper-cased if it's a valid #RRGGBB, else <paramref name="fallback"/>.</summary>
+    private static string ValidHexOr(string? c, string fallback)
+        => c != null && HexColor.IsMatch(c) ? c.ToUpperInvariant() : fallback;
 
     /// <summary>Deserialize + clamp a full <see cref="HpBarSettings"/> from posted JSON.</summary>
     private static bool TryParseHpBars(JsonElement el, out HpBarSettings hp)
@@ -364,6 +373,14 @@ public sealed class ApiServer : IDisposable
             parsed.WidthMagic = Math.Clamp(parsed.WidthMagic, 4f, 400f);
             parsed.WidthRare = Math.Clamp(parsed.WidthRare, 4f, 400f);
             parsed.WidthUnique = Math.Clamp(parsed.WidthUnique, 4f, 400f);
+            parsed.BorderNormal = Math.Clamp(parsed.BorderNormal, 0f, 20f);
+            parsed.BorderMagic = Math.Clamp(parsed.BorderMagic, 0f, 20f);
+            parsed.BorderRare = Math.Clamp(parsed.BorderRare, 0f, 20f);
+            parsed.BorderUnique = Math.Clamp(parsed.BorderUnique, 0f, 20f);
+            parsed.BorderColorNormal = ValidHexOr(parsed.BorderColorNormal, "#FF3333");
+            parsed.BorderColorMagic = ValidHexOr(parsed.BorderColorMagic, "#73A6FF");
+            parsed.BorderColorRare = ValidHexOr(parsed.BorderColorRare, "#FFD926");
+            parsed.BorderColorUnique = ValidHexOr(parsed.BorderColorUnique, "#FF7300");
             hp = parsed;
             return true;
         }

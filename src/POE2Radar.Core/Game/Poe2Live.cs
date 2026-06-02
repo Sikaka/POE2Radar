@@ -376,14 +376,19 @@ public sealed class Poe2Live
     }
 
     private readonly List<nint> _mapEls = new();
-    private readonly HashSet<nint> _everHidden = new(); // elements observed with visible-bit clear
+    private readonly HashSet<nint> _everHidden = new();  // elements observed with visible-bit clear
+    private readonly HashSet<nint> _everVisible = new(); // elements observed with visible-bit set
     private nint _mapCacheKey = -1;
 
     /// <summary>
-    /// Large-map UI state. The two MapUiElements (DefaultShift=(0,-20)) are discovered once per
-    /// area and cached — per frame we only read their flags/shift/zoom (cheap). The element whose
-    /// visible bit actually toggles is the "open the map" signal we gate on; the always-on minimap
-    /// element stays visible. Until a toggle is observed, "2 of 2 visible" is treated as open.
+    /// Map UI state. The MapUiElements (DefaultShift=(0,-20), Zoom=0.5) are discovered once per area
+    /// and cached — per frame we only read their flags/shift/zoom (cheap). The game exposes several:
+    /// some are always-on, some always-off, and one is the minimap viewport whose visible bit Tab
+    /// toggles. We gate "map open" on a *genuine toggler* — an element observed BOTH visible and
+    /// hidden — so a permanently-hidden element can't masquerade as the toggle signal (the bug that
+    /// pinned this to "closed" once the UI began exposing 4 elements instead of 2). Projection
+    /// params (shift/zoom) come from a currently-visible toggler. Until the first toggle is observed
+    /// this area, fall back to "more than the always-on baseline visible" (&gt;=2).
     /// </summary>
     public MapUi ReadMap(nint inGameState, nint areaInstance)
     {
@@ -392,27 +397,34 @@ public sealed class Poe2Live
             _mapCacheKey = areaInstance;
             _mapEls.Clear();
             _everHidden.Clear();
+            _everVisible.Clear();
             DiscoverMapElements(inGameState);
         }
 
         var visibleCount = 0;
-        nint toggleable = 0;
         var any = false; MapUi anyUi = default;
+        var sawToggler = false; var togglerVisible = false; var haveTogglerUi = false; MapUi togglerUi = default;
         foreach (var el in _mapEls)
         {
             if (!TryReadMapElement(el, out var vis, out var sx, out var sy, out var zoom)) continue;
-            if (!vis) _everHidden.Add(el);
-            else visibleCount++;
-            if (_everHidden.Contains(el)) toggleable = el;
+            if (vis) { _everVisible.Add(el); visibleCount++; } else _everHidden.Add(el);
             if (!any) { any = true; anyUi = new MapUi(vis, sx, sy, zoom); }
+
+            // A genuine toggler has been seen in BOTH states; permanently-on/off elements never qualify.
+            if (_everVisible.Contains(el) && _everHidden.Contains(el))
+            {
+                sawToggler = true;
+                if (vis) togglerVisible = true;
+                if (vis || !haveTogglerUi) { togglerUi = new MapUi(vis, sx, sy, zoom); haveTogglerUi = true; }
+            }
         }
         if (!any) return default;
 
-        // Projection params come from the toggleable (full) map once known, else the first found.
-        if (toggleable != 0 && TryReadMapElement(toggleable, out var tv, out var tsx, out var tsy, out var tz))
-            return new MapUi(tv, tsx, tsy, tz);
+        if (sawToggler)
+            return new MapUi(togglerVisible, togglerUi.ShiftX, togglerUi.ShiftY, togglerUi.Zoom);
 
-        // Not yet observed a toggle: treat "both visible" as open.
+        // No toggle observed yet this area: the open minimap lights up one element beyond the
+        // always-on baseline, so >=2 visible ≈ open. Superseded as soon as a real toggle is seen.
         return new MapUi(visibleCount >= 2, anyUi.ShiftX, anyUi.ShiftY, anyUi.Zoom);
     }
 

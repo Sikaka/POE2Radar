@@ -746,9 +746,10 @@ static int RunFindMap(ProcessHandle process, MemoryReader reader)
         {
             reader.TryReadStruct<uint>(cur + 0x88, out var f88);
             reader.TryReadStruct<uint>(cur + 0xA8, out var fA8);
+            reader.TryReadStruct<uint>(cur + 0x180, out var f180); // ← current validated Flags offset
             reader.TryReadStruct<uint>(cur + 0x190, out var f190);
             reader.TryReadStruct<uint>(cur + 0x1B8, out var f1B8);
-            Console.WriteLine($"  0x{cur:X16}  [+0x88]={f88:X8} [+0xA8]={fA8:X8} [+0x190]={f190:X8} [+0x1B8]={f1B8:X8}");
+            Console.WriteLine($"  0x{cur:X16}  [+0x180]={f180:X8} (bit0x0B={((f180 >> 0x0B) & 1)})  [+0x88]={f88:X8} [+0xA8]={fA8:X8} [+0x190]={f190:X8} [+0x1B8]={f1B8:X8}");
             if (!parent.TryGetValue(cur, out var par) || par == cur) break;
             cur = par;
         }

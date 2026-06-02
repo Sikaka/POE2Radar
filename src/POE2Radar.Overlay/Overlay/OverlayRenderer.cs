@@ -134,15 +134,15 @@ public sealed class OverlayRenderer : IDisposable
             if (e.Category != Poe2Live.EntityCategory.Monster || !e.IsAlive || e.HpMax <= 0) continue;
             if (e.IsFriendly) continue; // hostile monsters only — no bars over allied/minion mobs
 
-            // Per-rarity enable + width; tier (0..3) drives the scaling border decoration; the bar color
-            // is the matching monster icon color so "rare = gold" stays a single setting (NonMonster → no bar).
-            var (showBar, bw, colorHex, tier) = e.Rarity switch
+            // Per-rarity enable + width + border (weight/color); the bar *fill* color is the matching
+            // monster icon color so "rare = gold" stays a single setting (NonMonster → no bar).
+            var (showBar, bw, colorHex, borderW, borderHex) = e.Rarity switch
             {
-                Poe2Live.Rarity.Normal => (ctx.HpBarNormal, hb.WidthNormal, st.MonsterNormal.Color, 0),
-                Poe2Live.Rarity.Magic  => (ctx.HpBarMagic,  hb.WidthMagic,  st.MonsterMagic.Color,  1),
-                Poe2Live.Rarity.Rare   => (ctx.HpBarRare,   hb.WidthRare,   st.MonsterRare.Color,   2),
-                Poe2Live.Rarity.Unique => (ctx.HpBarUnique, hb.WidthUnique, st.MonsterUnique.Color,  3),
-                _                      => (false, 0f, "#FFFFFF", 0),
+                Poe2Live.Rarity.Normal => (ctx.HpBarNormal, hb.WidthNormal, st.MonsterNormal.Color, hb.BorderNormal, hb.BorderColorNormal),
+                Poe2Live.Rarity.Magic  => (ctx.HpBarMagic,  hb.WidthMagic,  st.MonsterMagic.Color,  hb.BorderMagic,  hb.BorderColorMagic),
+                Poe2Live.Rarity.Rare   => (ctx.HpBarRare,   hb.WidthRare,   st.MonsterRare.Color,   hb.BorderRare,   hb.BorderColorRare),
+                Poe2Live.Rarity.Unique => (ctx.HpBarUnique, hb.WidthUnique, st.MonsterUnique.Color, hb.BorderUnique, hb.BorderColorUnique),
+                _                      => (false, 0f, "#FFFFFF", 0f, "#FFFFFF"),
             };
             if (!showBar || bw <= 0f) continue;
 
@@ -164,27 +164,11 @@ public sealed class OverlayRenderer : IDisposable
             rt.FillRectangle(barRect, _bPanel!);
             _bStyle!.Color = frac < 0.3f ? ColLowHp : col;
             rt.FillRectangle(new Vortice.RawRectF(bx, by, bx + bw * frac, by + bh), _bStyle);
-            DrawHpDecoration(rt, tier, barRect, col);
-        }
-    }
-
-    /// <summary>
-    /// Rarity cue on an HP bar: a border whose weight scales with rarity. Tier 0 (Normal) draws nothing,
-    /// 1 (Magic) a thin border, 2 (Rare) a thick border, 3 (Unique) a double border. Color is the
-    /// rarity color passed in.
-    /// </summary>
-    private void DrawHpDecoration(ID2D1RenderTarget rt, int tier, Vortice.RawRectF r, Color4 col)
-    {
-        if (tier <= 0) return; // Normal: undecorated
-        _bStyle!.Color = col;
-        switch (tier)
-        {
-            case 1: rt.DrawRectangle(r, _bStyle, 1f); break; // Magic: thin
-            case 2: rt.DrawRectangle(r, _bStyle, 2f); break; // Rare: thick
-            default:                                          // Unique: double border
-                rt.DrawRectangle(r, _bStyle, 1.5f);
-                rt.DrawRectangle(new Vortice.RawRectF(r.Left - 3f, r.Top - 3f, r.Right + 3f, r.Bottom + 3f), _bStyle, 1f);
-                break;
+            if (borderW > 0f) // per-rarity border: weight + color from config
+            {
+                _bStyle.Color = ParseColor(borderHex, 1f);
+                rt.DrawRectangle(barRect, _bStyle, borderW);
+            }
         }
     }
 
@@ -331,9 +315,13 @@ public sealed class OverlayRenderer : IDisposable
 
         // Mechanic overrides — first enabled match wins. Force-draws (e.g. a flagged Expedition marker
         // shows even if its category would normally be filtered).
+        var catName = e.Category.ToString();
         foreach (var mech in st.Mechanics)
         {
             if (!mech.Enabled || mech.Match.Count == 0) continue;
+            // Category gate: if the rule lists categories, the entity must be one of them. Empty = all.
+            if (mech.Categories.Count > 0 &&
+                !mech.Categories.Contains(catName, StringComparer.OrdinalIgnoreCase)) continue;
             foreach (var key in mech.Match)
             {
                 if (!string.IsNullOrEmpty(key) && e.Metadata.Contains(key, StringComparison.OrdinalIgnoreCase))

@@ -61,7 +61,7 @@ public sealed class RadarSettings
     public RadarStyles Styles { get; set; } = new();
 
     // ── Monster HP-bar geometry (the per-rarity ENABLE flags above stay the source of truth;
-    //    this only adds sizing/offset). Rarity is signaled by a scaling border weight. ──
+    //    this adds per-rarity sizing, border thickness, and border color). ──
     public HpBarSettings HpBars { get; set; } = new();
 
     // ── Walkable-terrain bitmap colors/transparency. Defaults reproduce the old hardcoded wash. ──
@@ -142,14 +142,20 @@ public sealed class IconStyle
 
 /// <summary>
 /// A user-defined "mechanic" highlight: when an entity's metadata contains ANY of <see cref="Match"/>
-/// (case-insensitive), it draws this icon instead of its generic category dot — so e.g. an Expedition
-/// marker or a Strongbox stands out. The first enabled matching rule wins.
+/// (case-insensitive) AND its category is in <see cref="Categories"/> (if any are listed), it draws
+/// this icon instead of its generic category dot — so e.g. an Expedition marker or a Strongbox stands
+/// out. The first enabled matching rule wins.
 /// </summary>
 public sealed class MechanicStyle
 {
     public bool Enabled { get; set; } = true;
     public string Name { get; set; } = "";
     public List<string> Match { get; set; } = new();
+    /// <summary>Entity-category gate by <c>Poe2Live.EntityCategory</c> name (e.g. "Monster", "Chest",
+    /// "Other"). A rule applies only to these categories; empty = all categories. This stops a broad
+    /// match term (e.g. "Expedition") from hijacking the wrong entities — the league POI marker
+    /// (category Other) vs. the monsters that spawn during the event (category Monster).</summary>
+    public List<string> Categories { get; set; } = new();
     public string Shape { get; set; } = "Star";
     public string Color { get; set; } = "#FFFFFF";
     public float Opacity { get; set; } = 1.0f;
@@ -157,9 +163,12 @@ public sealed class MechanicStyle
 }
 
 /// <summary>
-/// Monster HP-bar geometry. Width is per-rarity; height + X/Y offset are shared. The per-rarity
-/// enable flags live on <see cref="RadarSettings"/> (HpBarNormal/Magic/Rare/Unique); the bar/border
-/// color is taken from the matching monster icon color so "rare = gold" stays one setting.
+/// Monster HP-bar geometry. Width, border thickness, and border color are per-rarity; height + X/Y
+/// offset are shared. The per-rarity enable flags live on <see cref="RadarSettings"/>
+/// (HpBarNormal/Magic/Rare/Unique). The bar *fill* color is taken from the matching monster icon
+/// color (so "rare = gold" stays one setting); the border is configured independently below. Border
+/// defaults reproduce the old weight-by-rarity cue (Normal undecorated, Magic 1px, Rare/Unique 2px)
+/// with borders tinted to match each rarity's icon color.
 /// </summary>
 public sealed class HpBarSettings
 {
@@ -170,6 +179,16 @@ public sealed class HpBarSettings
     public float WidthMagic { get; set; } = 38f;
     public float WidthRare { get; set; } = 50f;
     public float WidthUnique { get; set; } = 64f;
+    // Border thickness in px (0 = no border).
+    public float BorderNormal { get; set; } = 0f;
+    public float BorderMagic { get; set; } = 1f;
+    public float BorderRare { get; set; } = 2f;
+    public float BorderUnique { get; set; } = 2f;
+    // Border color (#RRGGBB); defaults mirror the per-rarity monster icon colors.
+    public string BorderColorNormal { get; set; } = "#FF3333";
+    public string BorderColorMagic { get; set; } = "#73A6FF";
+    public string BorderColorRare { get; set; } = "#FFD926";
+    public string BorderColorUnique { get; set; } = "#FF7300";
 }
 
 /// <summary>

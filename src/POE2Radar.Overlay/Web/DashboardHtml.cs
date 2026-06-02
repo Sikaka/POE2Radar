@@ -204,6 +204,23 @@ internal static class DashboardHtml
   .mechrow .top input.mname{flex:1; font-family:inherit; font-size:12px; color:var(--ink); background:#0c0a07; border:1px solid var(--line); border-radius:2px; padding:5px 9px}
   .mechrow .matchin{width:100%; font-family:inherit; font-size:11px; color:var(--ink-dim); background:#0c0a07; border:1px solid var(--line); border-radius:2px; padding:5px 9px; margin-bottom:8px}
   .mechrow .ctl{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .mcats{display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:8px}
+  .mcats-lbl{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); margin-right:2px}
+  .mcats-hint{font-size:10px; font-style:italic; color:var(--ink-faint)}
+  .catchip{display:inline-flex; align-items:center; font-size:11px; color:var(--ink-dim); background:#0c0a07; border:1px solid var(--line); border-radius:10px; padding:2px 9px; cursor:pointer; user-select:none}
+  .catchip:hover{border-color:var(--gold-deep)}
+  .catchip.on{color:var(--bg); background:var(--gold); border-color:var(--gold-bright); font-weight:600}
+  .catchip input{display:none}
+  /* consolidated HP-bar card: per-rarity grid + shared geometry footer */
+  .hpgrid{display:grid; grid-template-columns:64px 44px 1fr 30px 1fr; gap:9px 11px; align-items:center; padding:4px 0 2px}
+  .hpgrid .hph{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); text-align:right}
+  .hpgrid .hph:first-child{text-align:left}
+  .hpgrid .hpr{font-size:12px; color:var(--ink)}
+  .hpgrid .numin{width:100%; min-width:0; padding:5px 8px}
+  .hpgrid input[type=color]{width:100%}
+  .hpshared{display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; padding-top:11px; border-top:1px dotted var(--line-soft)}
+  .hpshared label{display:flex; align-items:center; gap:7px; font-size:11px; color:var(--ink-dim)}
+  .hpshared .numin{width:62px}
   .delbtn{font-family:inherit; font-size:11px; color:var(--blood-bright); background:transparent; border:1px solid var(--line); border-radius:2px; padding:4px 9px; cursor:pointer; flex:none}
   .trow-ctl{display:flex; align-items:center; gap:9px; flex:none}
 
@@ -316,28 +333,35 @@ internal static class DashboardHtml
           </div>
           <div class="card">
             <h3>Monster HP Bars <span class="tag">&middot; by rarity</span></h3>
-            <div class="row"><div class="rl">Normal<small>plain bar, no border</small></div>
-              <label class="sw"><input type="checkbox" data-set="hpBarNormal"><span class="track"></span><span class="knob"></span></label></div>
-            <div class="row"><div class="rl" style="color:var(--magic)">Magic<small>thin rarity border</small></div>
-              <label class="sw"><input type="checkbox" data-set="hpBarMagic"><span class="track"></span><span class="knob"></span></label></div>
-            <div class="row"><div class="rl" style="color:var(--rare)">Rare<small>thick rarity border</small></div>
-              <label class="sw"><input type="checkbox" data-set="hpBarRare"><span class="track"></span><span class="knob"></span></label></div>
-            <div class="row"><div class="rl" style="color:var(--unique)">Unique<small>double rarity border</small></div>
-              <label class="sw"><input type="checkbox" data-set="hpBarUnique"><span class="track"></span><span class="knob"></span></label></div>
-            <div class="row"><div class="rl hint-row">Border weight signals rarity; bar color follows the monster icon color.</div></div>
-          </div>
-          <div class="card">
-            <h3>HP Bar Sizing</h3>
-            <div class="row"><div class="rl">Bar height<small>pixels</small></div>
-              <input class="numin" type="number" step="1" min="1" max="30" data-hp="height"></div>
-            <div class="row"><div class="rl">Offset X<small>horizontal shift from the mob</small></div>
-              <input class="numin" type="number" step="1" data-hp="offsetX"></div>
-            <div class="row"><div class="rl">Offset Y<small>vertical shift (negative = above)</small></div>
-              <input class="numin" type="number" step="1" data-hp="offsetY"></div>
-            <div class="row"><div class="rl">Width &middot; Normal</div><input class="numin" type="number" step="1" min="4" data-hp="widthNormal"></div>
-            <div class="row"><div class="rl" style="color:var(--magic)">Width &middot; Magic</div><input class="numin" type="number" step="1" min="4" data-hp="widthMagic"></div>
-            <div class="row"><div class="rl" style="color:var(--rare)">Width &middot; Rare</div><input class="numin" type="number" step="1" min="4" data-hp="widthRare"></div>
-            <div class="row"><div class="rl" style="color:var(--unique)">Width &middot; Unique</div><input class="numin" type="number" step="1" min="4" data-hp="widthUnique"></div>
+            <div class="hpgrid">
+              <span class="hph">Rarity</span><span class="hph">Show</span><span class="hph">Width</span><span class="hph">Border</span><span class="hph">Thick</span>
+              <span class="hpr">Normal</span>
+              <label class="sw"><input type="checkbox" data-set="hpBarNormal"><span class="track"></span><span class="knob"></span></label>
+              <input class="numin" type="number" step="1" min="4" data-hp="widthNormal">
+              <input type="color" class="i-color" data-hpcolor="borderColorNormal">
+              <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderNormal">
+              <span class="hpr" style="color:var(--magic)">Magic</span>
+              <label class="sw"><input type="checkbox" data-set="hpBarMagic"><span class="track"></span><span class="knob"></span></label>
+              <input class="numin" type="number" step="1" min="4" data-hp="widthMagic">
+              <input type="color" class="i-color" data-hpcolor="borderColorMagic">
+              <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderMagic">
+              <span class="hpr" style="color:var(--rare)">Rare</span>
+              <label class="sw"><input type="checkbox" data-set="hpBarRare"><span class="track"></span><span class="knob"></span></label>
+              <input class="numin" type="number" step="1" min="4" data-hp="widthRare">
+              <input type="color" class="i-color" data-hpcolor="borderColorRare">
+              <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderRare">
+              <span class="hpr" style="color:var(--unique)">Unique</span>
+              <label class="sw"><input type="checkbox" data-set="hpBarUnique"><span class="track"></span><span class="knob"></span></label>
+              <input class="numin" type="number" step="1" min="4" data-hp="widthUnique">
+              <input type="color" class="i-color" data-hpcolor="borderColorUnique">
+              <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderUnique">
+            </div>
+            <div class="hpshared">
+              <label>Height<input class="numin" type="number" step="1" min="1" max="30" data-hp="height"></label>
+              <label>Offset X<input class="numin" type="number" step="1" data-hp="offsetX"></label>
+              <label>Offset Y<input class="numin" type="number" step="1" data-hp="offsetY"></label>
+            </div>
+            <div class="row"><div class="rl hint-row">Bar fill follows the monster icon color; set border color &amp; thickness per rarity (thickness 0 = no border). Offset Y negative = above the mob.</div></div>
           </div>
           <div class="card">
             <h3>Terrain <span class="tag">&middot; walkable overlay</span></h3>
@@ -352,16 +376,6 @@ internal static class DashboardHtml
                 <input type="range" class="op" min="0" max="100" data-topacity="edgeOpacity">
                 <span class="opv" data-topv="edgeOpacity">—</span></span></div>
             <div class="row"><div class="rl hint-row">Edits rebuild the terrain bitmap; use &ldquo;Show terrain&rdquo; above to hide it entirely.</div></div>
-          </div>
-          <div class="card" style="grid-column:1/-1">
-            <h3>Radar Icons <span class="tag">&middot; shape &middot; color &middot; opacity &middot; size</span></h3>
-            <div id="iconStyles"></div>
-          </div>
-          <div class="card" style="grid-column:1/-1">
-            <h3>Mechanics <span class="tag">&middot; metadata-matched icon overrides</span></h3>
-            <div class="row"><div class="rl hint-row">When an entity's metadata contains any comma-separated match term, it draws this icon instead of its generic dot. First enabled match wins.</div></div>
-            <div id="mechList"></div>
-            <button class="addbtn" id="mechAdd">+ Add mechanic</button>
           </div>
           <div class="card">
             <h3>Map Calibration</h3>
@@ -386,6 +400,16 @@ internal static class DashboardHtml
             <div class="row"><div class="rl">Mana cooldown<small>min ms between mana taps</small></div>
               <input class="numin" type="number" step="100" min="0" data-set="manaCooldownMs"></div>
             <div class="row"><div class="rl hint-row">F8 toggles auto-flask in-game. Status: <span id="flaskState">&mdash;</span></div></div>
+          </div>
+          <div class="card" style="grid-column:1/-1">
+            <h3>Radar Icons <span class="tag">&middot; shape &middot; color &middot; opacity &middot; size</span></h3>
+            <div id="iconStyles"></div>
+          </div>
+          <div class="card" style="grid-column:1/-1">
+            <h3>Mechanics <span class="tag">&middot; metadata-matched icon overrides</span></h3>
+            <div class="row"><div class="rl hint-row">When an entity's metadata contains any comma-separated match term &mdash; and it's one of the selected types &mdash; it draws this icon instead of its generic dot. First enabled match wins.</div></div>
+            <div id="mechList"></div>
+            <button class="addbtn" id="mechAdd">+ Add mechanic</button>
           </div>
         </div>
         <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsg">&#10003; saved to config</span></div>
@@ -580,8 +604,15 @@ function openIconPicker(anchor,current,cb){
 const saveStyles=()=>{ if(styles) saveSetting('styles',styles); };
 const saveHpBars=()=>{ if(hpBars) saveSetting('hpBars',hpBars); };
 
-function renderHpBars(){ if(!hpBars) return; $$('[data-hp]').forEach(el=>{ if(hpBars[el.dataset.hp]!==undefined) el.value=hpBars[el.dataset.hp]; }); }
-function wireHpBars(){ $$('[data-hp]').forEach(el=>{ el.onchange=()=>{ const v=parseFloat(el.value); if(!isNaN(v)&&hpBars){ hpBars[el.dataset.hp]=v; saveHpBars(); } }; }); }
+function renderHpBars(){
+  if(!hpBars) return;
+  $$('[data-hp]').forEach(el=>{ if(hpBars[el.dataset.hp]!==undefined) el.value=hpBars[el.dataset.hp]; });
+  $$('[data-hpcolor]').forEach(el=>{ el.value=hpBars[el.dataset.hpcolor]||'#ffffff'; });
+}
+function wireHpBars(){
+  $$('[data-hp]').forEach(el=>{ el.onchange=()=>{ const v=parseFloat(el.value); if(!isNaN(v)&&hpBars){ hpBars[el.dataset.hp]=v; saveHpBars(); } }; });
+  $$('[data-hpcolor]').forEach(el=>{ el.onchange=()=>{ if(hpBars){ hpBars[el.dataset.hpcolor]=el.value; saveHpBars(); } }; });
+}
 
 /* ── terrain color/transparency (POSTs the whole {terrain} object; rebuilds the terrain bitmap) ── */
 const saveTerrain=()=>{ if(terrain) saveSetting('terrain',terrain); };
@@ -627,7 +658,12 @@ function renderIcons(){
   });
 }
 
+/* Entity categories a mechanic rule can be gated to (value = Poe2Live.EntityCategory name). Empty
+   selection = applies to every category. Labels are friendlier than the raw enum names. */
+const MECH_CATS=[['Monster','Monsters'],['Chest','Chests'],['Other','Misc / POI'],
+  ['Object','Terrain'],['Npc','NPCs'],['Transition','Transitions']];
 function mechRow(m,i){
+  const cats=m.categories||[];
   return `<div class="mechrow" data-i="${i}">
     <div class="top">
       <label class="sw"><input type="checkbox" class="m-en"${m.enabled?' checked':''}><span class="track"></span><span class="knob"></span></label>
@@ -635,6 +671,9 @@ function mechRow(m,i){
       <button class="delbtn m-del">Remove</button>
     </div>
     <input class="matchin m-match" placeholder="match terms, comma-separated (e.g. Strongbox, StrongBoxes)" value="${esc((m.match||[]).join(', '))}">
+    <div class="mcats"><span class="mcats-lbl">Applies to</span>${MECH_CATS.map(([v,l])=>
+      `<label class="catchip${cats.includes(v)?' on':''}"><input type="checkbox" class="m-cat" data-cat="${v}"${cats.includes(v)?' checked':''}>${l}</label>`).join('')}
+      <span class="mcats-hint">${cats.length?'':'all types'}</span></div>
     <div class="ctl">
       ${pickerHtml(m.shape,m.color)}
       <input type="color" class="m-color" value="${m.color||'#ffffff'}">
@@ -654,6 +693,11 @@ function renderMechanics(){
     row.querySelector('.m-en').onchange=e=>{ m.enabled=e.target.checked; saveStyles(); };
     row.querySelector('.mname').onchange=e=>{ m.name=e.target.value; saveStyles(); };
     row.querySelector('.m-match').onchange=e=>{ m.match=e.target.value.split(',').map(s=>s.trim()).filter(Boolean); saveStyles(); };
+    row.querySelectorAll('.m-cat').forEach(cb=>{ cb.onchange=()=>{
+      m.categories=[...row.querySelectorAll('.m-cat:checked')].map(c=>c.dataset.cat);
+      cb.closest('.catchip').classList.toggle('on',cb.checked);
+      const h=row.querySelector('.mcats-hint'); if(h) h.textContent=m.categories.length?'':'all types';
+      saveStyles(); }; });
     pk.onclick=()=>openIconPicker(pk,m.shape,n=>{ m.shape=n; refreshPicker(pk,n,m.color); saveStyles(); });
     row.querySelector('.m-color').onchange=e=>{ m.color=e.target.value; refreshPicker(pk,m.shape,m.color); saveStyles(); };
     const op=row.querySelector('.m-op'), opv=row.querySelector('.opv');
