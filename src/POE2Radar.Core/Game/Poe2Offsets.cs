@@ -231,6 +231,12 @@ public static class Poe2
         // ✓ validated live: player (friendly) = 0x01, hostile MastodonBoss = 0x00.
         // GameHelper2 rule: IsFriendly = (Reaction & 0x7F) == 1.
         public const int Reaction = 0x1E0;
+
+        // ✓ validated live (presence buff on/off sweep, Research --presence): the presence
+        // area-of-effect scalar. Float, defaults to 1.0; a "+20% Presence AoE" buff drove it to
+        // 1.0 from a ~0.92 base (≈ √1.2 radius scaling), and it tracked the buff on→off→on with
+        // nothing else moving. Effective presence radius = base radius × this scalar.
+        public const int PresenceAoeScale = 0x2A0;
     }
 
     /// <summary>

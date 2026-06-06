@@ -60,6 +60,9 @@ if (HasFlag(args, "--validate"))
 if (HasFlag(args, "--info"))
     return RunInfo(process, reader);
 
+if (HasFlag(args, "--presence"))
+    return RunPresence(process, reader, HasFlag(args, "--diff"));
+
 if (HasFlag(args, "--camera"))
     return RunCamera(process, reader);
 
@@ -90,6 +93,7 @@ Console.WriteLine("  --hp <N> [--mana <N>]      value-scan for the player Life c
 Console.WriteLine("  --dump <hexAddr> [--dump-len <N>]   hex-dump a region for inspection");
 Console.WriteLine("  --dump <hexAddr> [--dump-len <N>]   hex-dump a region for inspection");
 Console.WriteLine("  --entity <hexAddr>         walk a PoE2 entity: id, metadata path, component map, Render→grid, Life");
+Console.WriteLine("  --presence [--diff]        baseline (then --diff) player components to find the presence-radius float");
 Console.WriteLine("  --serverdata               dump ServerData (AreaInstance+0x580): strings + StdVector quest-list candidates");
 Console.WriteLine("  --aob                      scan for IngameState via AOB patterns");
 return 0;
@@ -488,6 +492,190 @@ static int RunInfo(ProcessHandle process, MemoryReader reader)
             }
     }
     return 0;
+}
+
+// ── Presence: find the player's "presence radius" field by a walk-stable before/after diff ──
+// Presence is a per-entity aura radius (default ~4). We don't know which component/offset holds it,
+// nor the unit (metres vs grid), so we diff a byte window of EVERY component on the local player.
+//
+// THE NOISE PROBLEM: a single before/after read is swamped by world position + animation churn,
+// and the player must MOVE between samples (buffs are claimed at different map spots). SOLUTION:
+// poll many times WHILE WALKING and keep only floats that stay bitwise-identical across all samples
+// — i.e. true constants (max HP, model bounds, base speed, presence radius…). Position/animation
+// vary as you move, so they self-eliminate. A float that is walk-stable in BOTH phases yet DIFFERS
+// between them — with only the presence buff applied — is the presence field.
+//
+// UNIT-AGNOSTIC: the buff is a multiplier, so the change shows as a ratio regardless of unit:
+//   "+20% Presence radius" → ×1.20    |    "20% increased AoE" → radius ×√1.2 ≈ 1.095 (area = πr²)
+//
+//   --presence          baseline: poll ~5s while you walk; save the walk-stable constants.
+//   --presence --diff   poll ~5s while you walk (buff active); report constants that changed,
+//                       ranked by closeness to a presence multiplier. Re-runnable per buff.
+static int RunPresence(ProcessHandle process, MemoryReader reader, bool diff)
+{
+    const int Window = 0x800;       // bytes snapshotted per component
+    const int Samples = 9;          // reads per run
+    const int IntervalMs = 600;     // ~5s total — walk around the whole time
+    var snapPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "poe2_presence.bin");
+
+    var (_, _, lpArea, lp) = ResolveChain(process, reader);
+    if (lp == 0) { Console.Error.WriteLine("Could not resolve LocalPlayer (in game?)."); return 1; }
+    Console.WriteLine($"LocalPlayer 0x{lp:X}  ({ReadEntityMetadata(reader, lp)})");
+
+    // Resolve component addresses ONCE (stable within an area — do NOT zone during sampling).
+    var targets = new List<(string name, nint addr)> { ("<entity>", lp) };
+    targets.AddRange(WalkComponents(reader, lp).OrderBy(c => c.name, StringComparer.Ordinal));
+    Console.WriteLine($"{targets.Count} components (incl. <entity>). Polling {Samples}× over ~{Samples * IntervalMs / 1000.0:F0}s — WALK AROUND now.");
+
+    byte[] ReadOne(nint addr)
+    {
+        var b = new byte[Window];
+        var n = reader.TryReadBytes(addr, b);
+        return n == Window ? b : n > 0 ? b[..n] : Array.Empty<byte>();
+    }
+
+    // Sample 0 establishes the candidate values; later samples knock out any slot that moves.
+    var value = new Dictionary<string, byte[]>(StringComparer.Ordinal);          // name -> first-sample bytes
+    var stable = new Dictionary<string, bool[]>(StringComparer.Ordinal);          // name -> per-4-byte-slot "never changed"
+    foreach (var (name, addr) in targets)
+    {
+        var d = ReadOne(addr);
+        value[name] = d;
+        stable[name] = Enumerable.Repeat(true, d.Length / 4).ToArray();
+    }
+    for (var s = 1; s < Samples; s++)
+    {
+        Thread.Sleep(IntervalMs);
+        foreach (var (name, addr) in targets)
+        {
+            var d = ReadOne(addr);
+            var f = value[name]; var st = stable[name];
+            for (var slot = 0; slot < st.Length; slot++)
+            {
+                if (!st[slot]) continue;
+                var o = slot * 4;
+                if (o + 4 > d.Length || BitConverter.ToInt32(d, o) != BitConverter.ToInt32(f, o)) st[slot] = false;
+            }
+        }
+        Console.Write($"\r  sample {s + 1}/{Samples}   ");
+    }
+    Console.WriteLine();
+
+    static bool Plausible(float f) => float.IsFinite(f) && f != 0f && MathF.Abs(f) is >= 0.01f and <= 100000f;
+    var stableFloats = targets.Sum(t => Enumerable.Range(0, stable[t.name].Length)
+        .Count(slot => stable[t.name][slot] && Plausible(BitConverter.ToSingle(value[t.name], slot * 4))));
+    Console.WriteLine($"walk-stable plausible floats: {stableFloats}");
+
+    if (!diff)
+    {
+        using (var fs = System.IO.File.Create(snapPath))
+        using (var w = new System.IO.BinaryWriter(fs))
+        {
+            w.Write(targets.Count);
+            foreach (var (name, addr) in targets)
+            {
+                var d = value[name]; var st = stable[name];
+                w.Write(name); w.Write((long)addr); w.Write(d.Length); w.Write(d);
+                w.Write(st.Length); foreach (var bit in st) w.Write(bit);
+            }
+        }
+        Console.WriteLine($"baseline written: {snapPath}");
+        Console.WriteLine("\n--- walk-stable floats in [3.5, 4.5] (presence-default ≈ 4 candidates) ---");
+        foreach (var (name, _) in targets)
+            for (var slot = 0; slot < stable[name].Length; slot++)
+            {
+                if (!stable[name][slot]) continue;
+                var f = BitConverter.ToSingle(value[name], slot * 4);
+                if (f is >= 3.5f and <= 4.5f) Console.WriteLine($"  {name,-26} +0x{slot * 4:X3} = {f:F4}");
+            }
+        Console.WriteLine("\nNow claim the presence buff, then run (walking again):  --presence --diff");
+        return 0;
+    }
+
+    // Diff: load baseline (value + stable mask), keyed by component name.
+    if (!System.IO.File.Exists(snapPath)) { Console.Error.WriteLine("No baseline — run --presence first."); return 1; }
+    var baseVal = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+    var baseStable = new Dictionary<string, bool[]>(StringComparer.Ordinal);
+    using (var fs = System.IO.File.OpenRead(snapPath))
+    using (var r = new System.IO.BinaryReader(fs))
+    {
+        var count = r.ReadInt32();
+        for (var i = 0; i < count; i++)
+        {
+            var name = r.ReadString(); _ = r.ReadInt64();
+            var len = r.ReadInt32(); baseVal[name] = r.ReadBytes(len);
+            var slots = r.ReadInt32(); var st = new bool[slots];
+            for (var k = 0; k < slots; k++) st[k] = r.ReadBoolean();
+            baseStable[name] = st;
+        }
+    }
+    Console.WriteLine($"baseline: {baseVal.Count} components loaded from {snapPath}");
+
+    // Closeness to a plausible presence multiplier (1.20 = +radius%, 1.095 = √1.2 area%); 0 = exact.
+    // Direction-agnostic: a buff can be GAINED (ratio≈1.20) or LOST (ratio≈0.833=1/1.20), depending
+    // on which run is the baseline — normalize to ≥1 before measuring so both read as a hit.
+    static float MultiDist(float ratio)
+    {
+        var r = ratio < 1f ? 1f / ratio : ratio;
+        return MathF.Min(MathF.Abs(r - 1.20f), MathF.Abs(r - 1.0954f));
+    }
+
+    // A real candidate is walk-stable in BOTH runs (eliminates position/animation) yet differs.
+    var changes = new List<(string name, int off, float oldF, float newF, float ratio)>();
+    foreach (var (name, _) in targets)
+    {
+        if (!baseVal.TryGetValue(name, out var ob) || !baseStable.TryGetValue(name, out var obs)) continue;
+        var cur = value[name]; var cs = stable[name];
+        var slots = Math.Min(obs.Length, cs.Length);
+        for (var slot = 0; slot < slots; slot++)
+        {
+            if (!obs[slot] || !cs[slot]) continue;          // must be constant in BOTH phases
+            var o = slot * 4;
+            var a = BitConverter.ToSingle(ob, o);
+            var b = BitConverter.ToSingle(cur, o);
+            if (a == b || !Plausible(a) || !Plausible(b) || MathF.Sign(a) != MathF.Sign(b)) continue;
+            changes.Add((name, o, a, b, b / a));
+        }
+    }
+
+    Console.WriteLine($"\n{changes.Count} walk-stable float(s) changed between baseline and buffed.");
+    Console.WriteLine("\n--- ranked by closeness to a presence multiplier (1.20 or √1.2≈1.095) ---");
+    foreach (var c in changes.OrderBy(c => MultiDist(c.ratio)))
+    {
+        var flag = MultiDist(c.ratio) < 0.02f ? "  <== presence candidate" : "";
+        Console.WriteLine($"  {c.name,-26} +0x{c.off:X3}  {c.oldF,12:F4} -> {c.newF,-12:F4}  x{c.ratio:F4}{flag}");
+    }
+    if (changes.Count == 0)
+        Console.WriteLine("  (nothing changed among walk-stable constants — did the buff apply? same area? walking both runs?)");
+    Console.WriteLine("\nConfirm: --dump <componentAddr> at that offset, then toggle the buff and re-diff to verify it tracks.");
+    return 0;
+}
+
+// Walk an entity's component lookup, returning every (componentName, componentAddr). Mirrors
+// ResolveComponentAddr but yields the whole set (for snapshotting all of a player's components).
+static List<(string name, nint addr)> WalkComponents(MemoryReader reader, nint entity)
+{
+    var result = new List<(string, nint)>();
+    var details = SafePtr(reader, entity + Poe2.Entity.EntityDetailsPtr);
+    if (details == 0) return result;
+    var lookup = SafePtr(reader, details + Poe2.EntityDetails.ComponentLookUpPtr);
+    if (lookup == 0) return result;
+    if (!reader.TryReadStruct<POE2Radar.Core.Game.StdVector>(entity + Poe2.Entity.ComponentList, out var cl)) return result;
+    var compCount = ((long)cl.Last - (long)cl.First) / 8;
+    if (compCount is <= 0 or > 256) return result;
+    var bFirst = SafePtr(reader, lookup + Poe2.ComponentLookUp.NameAndIndexBucket);
+    if (!reader.TryReadStruct<nint>(lookup + Poe2.ComponentLookUp.NameAndIndexBucket + 8, out var bLast)) return result;
+    var entries = ((long)bLast - (long)bFirst) / Poe2.ComponentLookUp.EntryStride;
+    if (bFirst == 0 || entries is <= 0 or > 256) return result;
+    for (long i = 0; i < entries; i++)
+    {
+        var e = bFirst + (nint)(i * Poe2.ComponentLookUp.EntryStride);
+        if (!reader.TryReadStruct<int>(e + 8, out var index) || index < 0 || index >= compCount) continue;
+        var name = reader.ReadStringUtf8(SafePtr(reader, e), 40);
+        if (string.IsNullOrEmpty(name)) continue;
+        result.Add((name, SafePtr(reader, cl.First + (nint)(index * 8))));
+    }
+    return result;
 }
 
 // ── Rarity: find the ObjectMagicProperties rarity offset. Walks all alive monsters, resolves

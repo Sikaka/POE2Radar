@@ -47,6 +47,7 @@ public sealed class ApiServer : IDisposable
     private readonly Action _navClear;
     private readonly HiddenEntities _hidden;
     private readonly DisplayRules _displayRules;
+    private readonly LandmarkStore _landmarkStore;
     private readonly Func<IReadOnlyList<string>> _tiles;
     private volatile bool _running;
 
@@ -60,6 +61,7 @@ public sealed class ApiServer : IDisposable
         Action navClear,
         HiddenEntities hidden,
         DisplayRules displayRules,
+        LandmarkStore landmarkStore,
         Func<IReadOnlyList<string>> tilesProvider,
         int port = 7777)
     {
@@ -70,6 +72,7 @@ public sealed class ApiServer : IDisposable
         _navClear = navClear;
         _hidden = hidden;
         _displayRules = displayRules;
+        _landmarkStore = landmarkStore;
         _tiles = tilesProvider;
         _listener.Prefixes.Add($"http://localhost:{port}/");
     }
@@ -285,6 +288,33 @@ public sealed class ApiServer : IDisposable
                 // so a Tile rule can target any tile. Read-only.
                 Write(ctx, 200, JsonSerializer.Serialize(new { tiles = _tiles() }, Json));
                 break;
+
+            case "/api/landmarks":
+            {
+                if (ctx.Request.HttpMethod == "GET")
+                {
+                    // ?export=1 → the effective merged table as a clean JSON (for download / submission).
+                    if (ctx.Request.QueryString["export"] != null)
+                        Write(ctx, 200, _landmarkStore.ExportJson());
+                    else
+                        Write(ctx, 200, JsonSerializer.Serialize(new { entries = _landmarkStore.All() }, Json));
+                }
+                else if (ctx.Request.HttpMethod == "POST")
+                {
+                    if (!IsLoopbackHost(ctx.Request))
+                    {
+                        Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json));
+                        break;
+                    }
+                    ApplyLandmarks(ReadBody(ctx));
+                    Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, entries = _landmarkStore.All() }, Json));
+                }
+                else
+                {
+                    Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json));
+                }
+                break;
+            }
 
             case "/api/display-rules":
             {
@@ -627,6 +657,42 @@ public sealed class ApiServer : IDisposable
         if (string.IsNullOrWhiteSpace(v)) return null;
         foreach (var a in allowed) if (string.Equals(v, a, StringComparison.OrdinalIgnoreCase)) return a;
         return null;
+    }
+
+    /// <summary>Apply a Landmarks-tab command to the curated-label overlay:
+    /// <list type="bullet">
+    /// <item>{"set":{area,pattern,label}} — add / rename (string label) or suppress (null/blank label)</item>
+    /// <item>{"remove":{area,pattern}} — delete the user entry (reverts to the baked label, if any)</item>
+    /// <item>{"import":{area:{pattern:label|null}}} — replace the whole user overlay</item>
+    /// </list>
+    /// Edits curated labels only — never the game.</summary>
+    private void ApplyLandmarks(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return;
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return;
+
+        if (root.TryGetProperty("import", out var imp) && imp.ValueKind == JsonValueKind.Object)
+        {
+            try { _landmarkStore.Import(JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string?>>>(imp.GetRawText())); }
+            catch { /* ignore malformed import */ }
+            return;
+        }
+        if (root.TryGetProperty("set", out var set) && set.ValueKind == JsonValueKind.Object)
+        {
+            var area = Str(set, "area"); var pattern = Str(set, "pattern");
+            var label = set.TryGetProperty("label", out var lv) && lv.ValueKind == JsonValueKind.String ? lv.GetString() : null;
+            label = string.IsNullOrWhiteSpace(label) ? null : label.Trim();   // blank → suppress
+            if (!string.IsNullOrWhiteSpace(area) && !string.IsNullOrWhiteSpace(pattern))
+                _landmarkStore.Set(area!.Trim(), pattern!.Trim(), label);
+        }
+        if (root.TryGetProperty("remove", out var rem) && rem.ValueKind == JsonValueKind.Object)
+        {
+            var area = Str(rem, "area"); var pattern = Str(rem, "pattern");
+            if (!string.IsNullOrWhiteSpace(area) && !string.IsNullOrWhiteSpace(pattern))
+                _landmarkStore.Remove(area!.Trim(), pattern!.Trim());
+        }
     }
 
     private static bool TryBool(JsonElement e, out bool v)

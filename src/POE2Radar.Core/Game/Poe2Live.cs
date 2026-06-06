@@ -376,6 +376,16 @@ public sealed class Poe2Live
     /// per-area scan cache rebuilds.</summary>
     public Func<string, string?>? CustomLandmarkMatch { get; set; }
 
+    /// <summary>Optional Overlay-supplied curated-label lookup: (areaCode, tilePath) → friendly label,
+    /// or null. Lets a user-editable overlay sit on top of the baked-in <see cref="CustomLandmarkData"/>
+    /// (the "Landmarks" tab). When unset, the baked data is used directly. Call <see cref="InvalidateLandmarks"/>
+    /// after edits so the per-area scan rebuilds.</summary>
+    public Func<string, string, string?>? CuratedLookup { get; set; }
+
+    /// <summary>Resolve a tile's curated label: the injected user overlay if wired, else the baked list.</summary>
+    private string? Curated(string areaCode, string tilePath)
+        => CuratedLookup is { } f ? f(areaCode, tilePath) : CustomLandmarkData.TryMatch(areaCode, tilePath);
+
     /// <summary>Max gap (in TILES, Chebyshev) between cells still treated as one landmark cluster.
     /// Larger merges nearby copies of a reusable tile into fewer markers; smaller splits them. Set by
     /// the Overlay from <c>RadarSettings.LandmarkClusterGap</c>; call <see cref="InvalidateLandmarks"/>
@@ -469,12 +479,11 @@ public sealed class Poe2Live
             if (!pathCache.TryGetValue(tgtFile, out var path))
             {
                 var p = ReadStdWString(tgtFile + Poe2.TgtFileStruct.TgtPath);
-                // Surface a tile as a navigable landmark if the curated community list names it for
-                // this area, OR it matches the generic keyword filter (fallback for uncurated areas),
-                // OR it matches a user-defined custom landmark pattern (dashboard-editable). The curated
-                // list is the primary whitelist: it covers area transitions, vendors, NPCs, etc. whose
-                // tile paths carry none of the keywords.
-                var keep = CustomLandmarkData.TryMatch(areaCode, p) != null || IsInterestingLandmark(p)
+                // Surface a tile as a landmark ONLY if the curated community list names it for this area
+                // OR a user "Tile" display rule matches it (CustomLandmarkMatch). The old generic keyword
+                // sweep was removed — it surfaced decorative terrain (e.g. every "...Vault_Door..." tile)
+                // as noise; users now opt into any tile via Tile rules + the dashboard picker.
+                var keep = Curated(areaCode, p) != null
                            || CustomLandmarkMatch?.Invoke(p) != null;
                 path = keep ? p : null;
                 pathCache[tgtFile] = path;
@@ -490,7 +499,7 @@ public sealed class Poe2Live
             var name = LandmarkName(path);
             // Curated label wins; else a non-empty user label; else null (derived name shows). Same
             // for every cluster of this path (they're the same feature type in different spots).
-            var curated = CustomLandmarkData.TryMatch(areaCode, path) ?? NonEmpty(CustomLandmarkMatch?.Invoke(path));
+            var curated = Curated(areaCode, path) ?? NonEmpty(CustomLandmarkMatch?.Invoke(path));
             foreach (var cluster in ClusterTiles(cells, Math.Clamp(LandmarkClusterGap, 0, 64)))
             {
                 double sx = 0, sy = 0;
@@ -540,20 +549,6 @@ public sealed class Poe2Live
     /// <summary>Null for null/empty, else the string — so an empty user label means "surface but use the
     /// path-derived name" rather than showing a blank curated label.</summary>
     private static string? NonEmpty(string? s) => string.IsNullOrEmpty(s) ? null : s;
-
-    private static bool IsInterestingLandmark(string p)
-    {
-        if (string.IsNullOrEmpty(p)) return false;
-        // "leagues" catches league-mechanic terrain features generically (their tile paths live under
-        // Metadata/Terrain/Leagues/<Mechanic>/…) — e.g. the Incursion Waygate device — so they surface
-        // as position-independent tile landmarks like any boss arena / waypoint. The named keywords
-        // cover the staple static features (and a few explicit league terms as belt-and-braces).
-        foreach (var kw in new[] { "arena", "boss", "treasure", "waypoint", "encounter", "ritual",
-                                   "vault", "reward", "unique", "checkpoint", "altar", "shrine",
-                                   "leagues", "waygate", "incursion", "expedition", "breach", "delirium" })
-            if (p.Contains(kw, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
-    }
 
     private static string LandmarkName(string path)
     {

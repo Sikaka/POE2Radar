@@ -32,8 +32,10 @@ public sealed class RadarApp : IDisposable
     private readonly WatchedEntities _watched;
     private readonly LandmarkPatterns _landmarkPatterns;
     private readonly DisplayRules _displayRules;
+    private readonly LandmarkStore _landmarkStore;
     private int _landmarkGen;
     private int _displayRulesGen;
+    private int _landmarkStoreGen;
     private int _appliedClusterGap;
     private nint _areaInstanceForApi;   // current AreaInstance, for the /api/tiles tile-path lookup
     private volatile RadarState _state = RadarState.Empty;
@@ -188,9 +190,14 @@ public sealed class RadarApp : IDisposable
             Console.WriteLine("Migrated auto-path patterns onto display rules' Auto-path flag.");
         }
         _displayRulesGen = _displayRules.Generation;
+        // User-editable overlay on the baked curated landmark table (the "Landmarks" tab). Inject its
+        // lookup so the landmark scan honors user edits on top of the shipped community data.
+        _landmarkStore = new LandmarkStore(Path.Combine(ConfigDir, "landmarks.json"));
+        _live.CuratedLookup = _landmarkStore.Lookup;
+        _landmarkStoreGen = _landmarkStore.Generation;
         Console.WriteLine($"Hidden entities: {_hidden.Count} pattern(s); display rules: {_displayRules.Count}");
         _api = new ApiServer(() => _state, _settings, GetNavSelection, ToggleNavTarget, ClearNavSelection,
-                             _hidden, _displayRules, CurrentTilePaths, _settings.ApiPort);
+                             _hidden, _displayRules, _landmarkStore, CurrentTilePaths, _settings.ApiPort);
         try { _api.Start(); Console.WriteLine($"API on http://localhost:{_settings.ApiPort} (dashboard at /)"); }
         catch (Exception ex) { Console.Error.WriteLine($"API server disabled: {ex.Message}"); }
         Console.WriteLine("Hotkeys: F6=add nearest path target  F7=clear path targets  "
@@ -244,6 +251,13 @@ public sealed class RadarApp : IDisposable
                 _worldAt = now;
                 _terrain ??= _live.Terrain(areaInstance);
                 _entities = _live.Entities(areaInstance);
+                // Drop the local player's own entity — it lives in the AwakeEntities map like any
+                // other Player, but the dedicated center blip already represents "you" (gated by
+                // ShowPlayerBlip). Without this, a Player-category dot renders at map-center even with
+                // the blip off. Filtering here (not the renderer) keeps the nav builder and HTTP API
+                // consistent, and still leaves party members visible as Player dots.
+                if (localPlayer != 0)
+                    _entities = _entities.Where(e => e.Address != localPlayer).ToList();
                 // Drop user-hidden entities once, here — so the renderer, nav-target builder, and the
                 // published RadarState (HTTP API) all see the same filtered list. Cull by metadata.
                 if (_hidden.Count > 0)
@@ -259,6 +273,12 @@ public sealed class RadarApp : IDisposable
                 if (_displayRules.Generation != _displayRulesGen)
                 {
                     _displayRulesGen = _displayRules.Generation;
+                    _live.InvalidateLandmarks();
+                }
+                // Curated-landmark edits (Landmarks tab) change what surfaces + the labels — rebuild.
+                if (_landmarkStore.Generation != _landmarkStoreGen)
+                {
+                    _landmarkStoreGen = _landmarkStore.Generation;
                     _live.InvalidateLandmarks();
                 }
                 // Live-apply a changed cluster radius (dashboard/config edit) the same way.

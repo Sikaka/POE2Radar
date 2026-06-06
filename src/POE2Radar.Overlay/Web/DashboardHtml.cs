@@ -286,6 +286,15 @@ internal static class DashboardHtml
   .pickrar{flex:none; font-size:10px; color:var(--rare)}
   .pickempty{padding:24px 14px; color:var(--ink-faint); font-style:italic; text-align:center}
   .pickfoot{padding:9px 14px; border-top:1px solid var(--line); color:var(--ink-faint); font-size:11px}
+  /* Landmarks tab rows */
+  .lmrow{display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px dotted var(--line-soft)}
+  .lmbadge{flex:none; min-width:48px; text-align:center; font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-dim); border:1px solid var(--line); border-radius:8px; padding:2px 6px}
+  .lmbadge.user{color:var(--gold); border-color:var(--gold-deep)}
+  .lmbadge.hidden{color:var(--blood-bright); border-color:var(--blood)}
+  .lmarea{flex:none; min-width:64px; font-size:11px; color:var(--ink-dim); font-family:"Consolas",monospace}
+  .lmlabel{flex:none; width:200px}
+  .lmpath{flex:1; min-width:0; color:var(--ink-faint); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:"Consolas",monospace}
+  .lmrow.sup .lmlabel,.lmrow.sup .lmpath{opacity:.5}
   .ipop-grid{display:grid; grid-template-columns:repeat(6,38px); gap:4px}
   .ipop-cell{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; width:38px; height:40px; border:1px solid transparent; border-radius:3px; cursor:pointer; color:var(--ink)}
   .ipop-cell:hover{border-color:var(--gold); background:#0c0a07}
@@ -351,6 +360,7 @@ internal static class DashboardHtml
     <main>
       <div class="tabs">
         <button class="tab on" data-tab="filters">Rules</button>
+        <button class="tab" data-tab="landmarks">Landmarks</button>
         <button class="tab" data-tab="settings">Settings</button>
       </div>
 
@@ -376,6 +386,32 @@ internal static class DashboardHtml
           </div>
         </div>
         <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsgF">&#10003; saved to config</span></div>
+      </section>
+
+      <section class="view" data-view="landmarks" hidden>
+        <div class="panel-grid">
+          <div class="card" style="grid-column:1/-1">
+            <h3>Landmarks <span class="tag">&middot; curated map labels &mdash; view, fix, share</span></h3>
+            <div class="row"><div class="rl hint-row">The built-in &ldquo;known&rdquo; map features (boss arenas, exits, loot, waypoints&hellip;), labelled per area. Rename a wrong label, add your own, or hide a bad entry. <b>Export</b> a corrected list to share or submit for baking into a release; <b>Import</b> to load one. (For how a tile <i>draws</i> — icon/color/hide — use a Tile rule on the Rules tab; this is just the labels.)</div></div>
+            <div class="controls" style="margin:6px 0 12px">
+              <input type="search" id="lmSearch" placeholder="filter by area / tile / label…">
+              <button class="chip on" id="lmAreaOnly">This area only</button>
+              <span style="flex:1"></span>
+              <button class="addbtn" id="lmImport" style="width:auto;margin:0;padding:8px 14px">Import…</button>
+              <button class="addbtn" id="lmExport" style="width:auto;margin:0;padding:8px 14px">Export</button>
+            </div>
+            <div id="lmList"></div>
+            <div class="mechrow">
+              <div class="top">
+                <input class="mname" id="lmArea" placeholder="area (e.g. P2_3, or *)" style="max-width:150px">
+                <input class="mname" id="lmPat" placeholder="tile path / pattern">
+                <input class="mname" id="lmLabel" placeholder="label">
+                <button class="addbtn" id="lmAdd" style="width:auto;margin:0;padding:8px 16px">+ Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsgL">&#10003; saved to config</span></div>
       </section>
 
       <section class="view" data-view="settings" hidden>
@@ -483,6 +519,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   $$('.view').forEach(v=>v.hidden = v.dataset.view!==activeTab);
   if(activeTab==='settings') loadSettings();
   if(activeTab==='filters') loadFilters();
+  if(activeTab==='landmarks') loadLandmarks();
 });
 
 /* ── polling (left rail vitals/zone/census) ── */
@@ -863,6 +900,70 @@ $('#hideAdd').onclick=()=>{
   postHidden({add:p}).then(loadFilters);
 };
 $('#hidePattern').onkeydown=e=>{ if(e.key==='Enter') $('#hideAdd').click(); };
+
+/* ── Landmarks tab: view/edit the curated map-label table (baked + user overlay) + import/export ── */
+let lmEntries=[], lmAreaOnly=true, lmQ='';
+function flashL(){ const m=$('#savedMsgL'); if(!m) return; m.classList.add('show'); clearTimeout(m._t); m._t=setTimeout(()=>m.classList.remove('show'),1100); }
+async function loadLandmarks(){
+  try{ const r=await getJSON('/api/landmarks'); lmEntries=r.entries||[]; }catch(e){ lmEntries=[]; }
+  const a=$('#lmArea'); if(a && !a.value) a.value=(state&&state.areaCode)||'';
+  renderLandmarks();
+}
+async function postLandmarks(body){
+  try{ const r=await fetch('/api/landmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const j=await r.json(); if(j&&j.entries) lmEntries=j.entries; flashL(); }catch(e){}
+  renderLandmarks();
+}
+function lmRow(e){
+  const badge=e.suppressed?'hidden':e.source;
+  const del=e.suppressed?'Restore':(e.source==='user'?'Remove':'Hide');
+  return `<div class="lmrow${e.suppressed?' sup':''}" data-area="${esc(e.area)}" data-pat="${esc(e.pattern)}">
+    <span class="lmbadge ${badge}">${badge}</span>
+    <span class="lmarea">${esc(e.area)}</span>
+    <input class="mname lmlabel" value="${esc(e.label||'')}" placeholder="${e.suppressed?'(hidden)':'label'}">
+    <span class="lmpath" title="${esc(e.pattern)}">${esc(e.pattern)}</span>
+    <button class="delbtn lm-del">${del}</button>
+  </div>`;
+}
+function renderLandmarks(){
+  const host=$('#lmList'); if(!host) return;
+  const area=(state&&state.areaCode)||'';
+  const rows=lmEntries.filter(e=>{
+    if(lmAreaOnly && e.area!=='*' && e.area!==area) return false;
+    if(lmQ){ if(!((e.area+' '+e.pattern+' '+(e.label||'')).toLowerCase().includes(lmQ))) return false; }
+    return true;
+  });
+  host.innerHTML = rows.length ? rows.map(lmRow).join('')
+    : `<div class="row"><div class="rl hint-row">No curated landmarks${lmAreaOnly?' for this area ('+esc(area||'—')+')':''}. Add one below${lmAreaOnly?', or turn off &ldquo;This area only&rdquo;':''}.</div></div>`;
+  $$('#lmList .lmrow').forEach(row=>{
+    const area=row.dataset.area, pat=row.dataset.pat, e=lmEntries.find(x=>x.area===area&&x.pattern===pat); if(!e) return;
+    row.querySelector('.lmlabel').onchange=ev=>postLandmarks({set:{area,pattern:pat,label:ev.target.value}});
+    row.querySelector('.lm-del').onclick=()=>{
+      if(e.suppressed || e.source==='user') postLandmarks({remove:{area,pattern:pat}}); // restore baked / delete user
+      else postLandmarks({set:{area,pattern:pat,label:null}});                          // suppress a baked entry
+    };
+  });
+}
+$('#lmSearch')?.addEventListener('input',e=>{ lmQ=e.target.value.toLowerCase(); renderLandmarks(); });
+$('#lmAreaOnly')?.addEventListener('click',()=>{ lmAreaOnly=!lmAreaOnly; $('#lmAreaOnly').classList.toggle('on',lmAreaOnly); renderLandmarks(); });
+$('#lmAdd')?.addEventListener('click',()=>{
+  const area=($('#lmArea').value||'').trim(), pat=($('#lmPat').value||'').trim(), label=($('#lmLabel').value||'').trim();
+  if(!area||!pat||!label) return;
+  $('#lmPat').value=''; $('#lmLabel').value='';
+  postLandmarks({set:{area,pattern:pat,label}});
+});
+$('#lmExport')?.addEventListener('click',async()=>{
+  try{ const txt=await (await fetch('/api/landmarks?export=1',{cache:'no-store'})).text();
+    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([txt],{type:'application/json'}));
+    a.download='CustomLandmarks.json'; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){}
+});
+$('#lmImport')?.addEventListener('click',()=>{
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
+  inp.onchange=()=>{ const f=inp.files&&inp.files[0]; if(!f) return; const rd=new FileReader();
+    rd.onload=()=>{ try{ postLandmarks({import:JSON.parse(rd.result)}); }catch(_){ alert('Invalid JSON file'); } };
+    rd.readAsText(f); };
+  inp.click();
+});
 
 /* ── left rail ── */
 function renderState(){
