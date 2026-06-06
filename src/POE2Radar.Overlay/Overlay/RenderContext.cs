@@ -11,7 +11,7 @@ namespace POE2Radar.Overlay;
 /// <see cref="MatchKey"/> (landmark path or entity metadata) is what auto-nav patterns match against;
 /// <see cref="Grid"/> is the A* goal cell.
 /// </summary>
-public readonly record struct NavTarget(string Id, string Name, NumVec2 Grid, string MatchKey, bool IsEntity);
+public readonly record struct NavTarget(string Id, string Name, NumVec2 Grid, string MatchKey, bool IsEntity, bool AutoPath = false);
 
 /// <summary>One legend row: a navigation target, the selection-order color slot it draws in (0..7, or
 /// -1 when unselected), and whether it is currently selected (its own A* route is drawn).</summary>
@@ -74,6 +74,10 @@ public sealed record RenderContext(
     HpBarSettings HpBars,
     // Walkable-terrain bitmap colors/transparency (mirrored from RadarSettings).
     TerrainSettings TerrainStyle,
-    // User "watched" highlight matcher: metadata → the first enabled watch rule it matches (or null).
-    // Force-draws the matched entity in the rule's color/shape/size and draws its label. May be null.
-    Func<string, Web.WatchedEntry?>? WatchedMatch);
+    // ── Unified display-rule engine (Phase 1). Resolves an entity to the first matching display rule
+    // (or null → not drawn); the rule says hide or how to draw (shape/color/size/label). Replaces the
+    // watched/mechanic/category dot decision in DrawMap. Null only if not wired (defensive). ──
+    Func<Poe2Live.EntityDot, Web.DisplayRule?>? Resolve = null,
+    // Tile-landmark styling resolver (Phase 2b): given a tile path, the matching "Tile"-category rule
+    // (styling pass) or null. Lets a rule restyle/hide a surfaced landmark; null → default Landmark style.
+    Func<string, Web.DisplayRule?>? ResolveTile = null);

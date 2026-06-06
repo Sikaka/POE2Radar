@@ -16,6 +16,14 @@ public sealed class RadarSettings
     public bool UseCuratedLandmarks { get; set; } = true;
     public bool DrawAllLandmarkPaths { get; set; } = false;
 
+    // ── Landmark clustering. A reusable tile (e.g. a "stairs up" wall piece) recurs in several
+    //    disjoint spots — a multi-level dungeon has several stair-up/stair-down sections — so the
+    //    scanner groups a tile path's cells into spatial clusters and emits one marker per cluster.
+    //    This is the MAX GAP (in TILES; 1 tile ≈ 23 grid units) between cells still considered the
+    //    same cluster: larger = merges nearby spots (fewer markers, less map spam), smaller = splits
+    //    them (more markers). 0 disables bridging (only directly-touching tiles group). ──
+    public int LandmarkClusterGap { get; set; } = 2;
+
     // ── Radar display toggles. ──
     public bool ShowMonsters { get; set; } = true;
     public bool ShowTerrain { get; set; } = true;
@@ -111,7 +119,7 @@ public sealed class RadarSettings
             if (loaded.Migrate())
             {
                 loaded.Save();
-                Console.WriteLine("Settings: migrated stale Expedition match patterns to the precise form.");
+                Console.WriteLine("Settings: migrated stale mechanic rules (Expedition/Strongbox category gating).");
             }
             return loaded;
         }
@@ -123,11 +131,15 @@ public sealed class RadarSettings
     }
 
     /// <summary>
-    /// One-time, idempotent repair of configs written by older builds (loaded verbatim, so they'd
-    /// otherwise keep the bug forever). Rewrites the over-broad Expedition matches — the bare
-    /// "Expedition" and the dead "ExpeditionEncounter" (real path is "Expedition2Encounter") that
-    /// tagged every "Expedition"-pathed entity (combat mobs + detonation cracks) — to the precise,
-    /// Other-gated "Expedition2/Expedition2Encounter". Returns true if anything changed.
+    /// One-time, idempotent repair of mechanic rules from older builds (loaded verbatim, so they'd
+    /// otherwise keep the bug forever). Both fixes address ungated rules that tagged a mechanic's
+    /// spawned monsters, not just the object:
+    /// <list type="bullet">
+    /// <item>Expedition: bare "Expedition" / dead "ExpeditionEncounter" → precise, Other-gated
+    ///   "Expedition2/Expedition2Encounter".</item>
+    /// <item>Strongbox: add a Chest category gate (the box's Vaal guards carry "...Strongbox").</item>
+    /// </list>
+    /// Returns true if anything changed.
     /// </summary>
     public bool Migrate()
     {
@@ -138,17 +150,35 @@ public sealed class RadarSettings
 
         var changed = false;
 
-        // Mechanic overrides: drop the stale keys; if any were present, ensure the precise key and
-        // an Other category gate (so it can't hijack the Monster-category expedition mobs).
+        static bool IsBroadStrongbox(string p) => string.Equals(p, "Strongbox", StringComparison.OrdinalIgnoreCase);
+
         if (Styles?.Mechanics is { } mechanics)
             foreach (var m in mechanics)
             {
-                if (m.Match is null || m.Match.RemoveAll(IsStaleExp) == 0) continue;
-                if (!m.Match.Exists(p => string.Equals(p, precise, StringComparison.OrdinalIgnoreCase)))
-                    m.Match.Add(precise);
-                m.Categories ??= new List<string>();
-                if (m.Categories.Count == 0) m.Categories.Add("Other");
-                changed = true;
+                if (m.Match is null) continue;
+                // Expedition: drop the stale/over-broad keys → the precise key + an Other category gate
+                // (so it can't hijack the Monster-category expedition mobs).
+                if (m.Match.RemoveAll(IsStaleExp) > 0)
+                {
+                    if (!m.Match.Exists(p => string.Equals(p, precise, StringComparison.OrdinalIgnoreCase)))
+                        m.Match.Add(precise);
+                    m.Categories ??= new List<string>();
+                    if (m.Categories.Count == 0) m.Categories.Add("Other");
+                    changed = true;
+                }
+                // Strongbox: the default's bare "Strongbox" term over-matched twice — the box's spawned
+                // Vaal guards (…Strongbox monsters) and ordinary area chests named "...Strongbox". Drop
+                // it down to the "StrongBoxes" directory term and gate to Chest (the box is a /Chests/
+                // entity). Triggers whenever the broad term is still present, regardless of category.
+                else if (m.Match.Exists(IsBroadStrongbox))
+                {
+                    m.Match.RemoveAll(IsBroadStrongbox);
+                    if (!m.Match.Exists(p => string.Equals(p, "StrongBoxes", StringComparison.OrdinalIgnoreCase)))
+                        m.Match.Add("StrongBoxes");
+                    m.Categories ??= new List<string>();
+                    if (m.Categories.Count == 0) m.Categories.Add("Chest");
+                    changed = true;
+                }
             }
 
         // Auto-nav: the seeded "ExpeditionEncounter" matched nothing (digit in the real path).
@@ -297,7 +327,12 @@ public sealed class RadarStyles
         new() { Name = "Expedition", Match = new() { "Expedition2/Expedition2Encounter" }, Categories = new() { "Other" }, Shape = "Plus", Color = "#26E6D9", Opacity = 1f, Size = 7f },
         new() { Name = "Ritual",     Match = new() { "Ritual" },                            Shape = "Star",     Color = "#FF3355", Opacity = 1f, Size = 7f },
         new() { Name = "Breach",     Match = new() { "Breach" },                            Shape = "Diamond",  Color = "#A64DFF", Opacity = 1f, Size = 7f },
-        new() { Name = "Strongbox",  Match = new() { "Strongbox", "StrongBoxes" },          Shape = "Square",   Color = "#FFB300", Opacity = 1f, Size = 6f },
+        // Match the league-strongbox DIRECTORY only ("Metadata/Chests/StrongBoxes/…") and gate to
+        // Chest. The bare "Strongbox" term was too broad twice over: it tagged the box's spawned Vaal
+        // guards (…Strongbox monsters — now excluded by the Chest gate) AND ordinary area chests that
+        // merely carry "Strongbox" in their name (e.g. Chests/KedgeBayChests/KedgeBayChestStrongbox).
+        // "StrongBoxes" hits the real boxes (BasicStrongboxLow lives under it) but not those.
+        new() { Name = "Strongbox",  Match = new() { "StrongBoxes" }, Categories = new() { "Chest" }, Shape = "Square", Color = "#FFB300", Opacity = 1f, Size = 6f },
         new() { Name = "Essence",    Match = new() { "Essence" },                           Shape = "Triangle", Color = "#33E0FF", Opacity = 1f, Size = 7f },
         new() { Name = "Shrine",     Match = new() { "Shrine" },                            Shape = "Star",     Color = "#7DFF7D", Opacity = 1f, Size = 6f },
     };

@@ -45,6 +45,9 @@ if (HasFlag(args, "--watch-expedition"))
 if (HasFlag(args, "--watch"))
     return RunWatch(process, reader);
 
+if (TryGetStrArg(args, "--tile-find") is { } tileNeedle)
+    return RunTileFind(process, reader, tileNeedle);
+
 if (HasFlag(args, "--tiles"))
     return RunTiles(process, reader);
 
@@ -757,6 +760,53 @@ static int RunTiles(ProcessHandle process, MemoryReader reader)
     return 0;
 }
 
+// ── Tile-find: list the GRID positions of every terrain tile whose TgtPath contains <needle>.
+// Answers "is this feature actually in the static tile grid, and WHERE?" — and exposes whether a
+// tile type is a single landmark or a reusable piece scattered across the map (whose averaged
+// centroid would be meaningless). Prints each instance's grid pos + the cluster count, bounding
+// box, and centroid so a scattered-vs-clustered tile is obvious at a glance.
+static int RunTileFind(ProcessHandle process, MemoryReader reader, string needle)
+{
+    var (_, _, ai, _) = ResolveChain(process, reader);
+    if (ai == 0) { Console.Error.WriteLine("Could not resolve chain (in game?)."); return 1; }
+    var terrain = ai + Poe2.AreaInstance.TerrainMetadata;
+    reader.TryReadStruct<long>(terrain + Poe2.Terrain.TotalTiles, out var tilesX);
+    var first = SafePtr(reader, terrain + Poe2.Terrain.TileDetailsPtr);
+    reader.TryReadStruct<nint>(terrain + Poe2.Terrain.TileDetailsPtr + 8, out var last);
+    var count = first == 0 ? 0 : ((long)last - (long)first) / Poe2.TileStructureSize;
+    if (tilesX <= 0 || count is <= 0 or > 1_000_000) { Console.Error.WriteLine("implausible tile grid"); return 1; }
+    Console.WriteLine($"AreaInstance 0x{ai:X}  tilesX={tilesX}  tileCount={count}  needle='{needle}'");
+
+    var cell = Poe2.Terrain.TileGridCells;
+    var pathCache = new Dictionary<nint, string?>();
+    var hits = new List<(int gx, int gy, string path)>();
+    for (long i = 0; i < count; i++)
+    {
+        var tile = first + (nint)(i * Poe2.TileStructureSize);
+        var tgt = SafePtr(reader, tile + Poe2.TileStructure.TgtFilePtr);
+        if (tgt == 0) continue;
+        if (!pathCache.TryGetValue(tgt, out var path))
+        {
+            var p = ReadStdWString(reader, tgt + Poe2.TgtFileStruct.TgtPath);
+            path = p.Contains(needle, StringComparison.OrdinalIgnoreCase) ? p : null;
+            pathCache[tgt] = path;
+        }
+        if (path is null) continue;
+        hits.Add(((int)((i % tilesX) * cell), (int)((i / tilesX) * cell), path));
+    }
+
+    if (hits.Count == 0) { Console.WriteLine("no matching tiles."); return 0; }
+    Console.WriteLine($"\n{hits.Count} matching tile(s) — grid positions:");
+    foreach (var h in hits.OrderBy(h => h.gy).ThenBy(h => h.gx))
+        Console.WriteLine($"  ({h.gx,5},{h.gy,5})  {h.path}");
+    int minx = hits.Min(h => h.gx), maxx = hits.Max(h => h.gx);
+    int miny = hits.Min(h => h.gy), maxy = hits.Max(h => h.gy);
+    Console.WriteLine($"\ncentroid ({(int)hits.Average(h => h.gx)},{(int)hits.Average(h => h.gy)})  " +
+        $"bbox ({minx},{miny})-({maxx},{maxy})  span {maxx - minx}x{maxy - miny}");
+    Console.WriteLine("(a large span = a reusable tile scattered across the map: its averaged centroid is meaningless.)");
+    return 0;
+}
+
 // ── Watch: poll as the player plays, logging an AreaInstance snapshot on every area
 // change so the area-hash/level offsets can be diffed out across zones. Resolves the
 // GameState slot once (AOB), then cheap chain derefs each poll. Run in the background and
@@ -1211,6 +1261,12 @@ static int RunAobScan(ProcessHandle process, MemoryReader reader)
 }
 
 static bool HasFlag(string[] args, string flag) => Array.IndexOf(args, flag) >= 0;
+
+static string? TryGetStrArg(string[] args, string flag)
+{
+    var idx = Array.IndexOf(args, flag);
+    return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
+}
 
 static int? TryGetIntArg(string[] args, string flag)
 {

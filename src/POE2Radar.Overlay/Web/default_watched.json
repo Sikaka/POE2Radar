@@ -10,7 +10,7 @@
   {"pattern": "Monsters/NPC/", "label": "NPC", "color": "#ffdd33", "enabled": true},
   {"pattern": "ReforgingBench", "label": "Reforging Bench", "color": "#ff66cc", "enabled": true},
   {"pattern": "TransmutationBench", "label": "Crafting Bench", "color": "#ff66cc", "enabled": true},
-  {"pattern": "Strongbox", "label": "Strongbox", "color": "#ff9933", "enabled": true},
+  {"pattern": "StrongBoxes", "label": "Strongbox", "color": "#ff9933", "enabled": true},
   {"pattern": "Shrine", "label": "Shrine", "color": "#99ff99", "enabled": true},
   {"pattern": "LeagueRitual", "label": "Ritual", "color": "#ff3333", "enabled": true},
   {"pattern": "EinharQuestMarker", "label": "Quest Marker", "color": "#ffff33", "enabled": true},

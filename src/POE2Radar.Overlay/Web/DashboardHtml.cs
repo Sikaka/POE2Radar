@@ -216,8 +216,35 @@ internal static class DashboardHtml
   .catchip:hover{border-color:var(--gold-deep)}
   .catchip.on{color:var(--bg); background:var(--gold); border-color:var(--gold-bright); font-weight:600}
   .catchip input{display:none}
+  /* Display-rule rows: collapsed one-line header, expand to the full editor. */
+  .drrow{padding:8px 12px}
+  .drhead{display:flex; align-items:center; gap:9px; cursor:pointer}
+  .drhead .sw{flex:none}
+  .drcaret{color:var(--ink-faint); width:10px; font-size:10px; flex:none}
+  .drswatch{width:15px; height:15px; flex:none; display:inline-flex}
+  .drswatch svg{width:15px; height:15px; display:block}
+  .drnm{font-weight:600; color:var(--ink); white-space:nowrap; flex:none; max-width:200px; overflow:hidden; text-overflow:ellipsis}
+  .drsum{flex:1 1 auto; min-width:0; color:var(--ink-faint); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .drbadges{display:inline-flex; gap:4px; flex:none}
+  .drbadge{font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-dim); border:1px solid var(--line); border-radius:8px; padding:1px 6px; white-space:nowrap}
+  .drbadge.hide{color:var(--blood-bright); border-color:var(--blood)}
+  .drrow.off .drnm,.drrow.off .drsum,.drrow.off .drswatch{opacity:.45}
+  .drbody{margin-top:10px; padding-top:10px; border-top:1px dotted var(--line-soft)}
+  .drbody .top{align-items:center; margin-bottom:8px}
+  .drord{display:inline-flex; gap:2px; flex:none}
+  .drhead .delbtn{flex:none}
+  .ordbtn{font-size:10px; line-height:1; color:var(--ink-dim); background:#0c0a07; border:1px solid var(--line); border-radius:2px; padding:3px 6px; cursor:pointer}
+  .ordbtn:hover{color:var(--gold-bright); border-color:var(--gold-deep)}
+  .drconds{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px}
+  .drsel{display:inline-flex; align-items:center; gap:5px; font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-faint)}
+  .drsel select{font-family:inherit; font-size:11px; text-transform:none; letter-spacing:0; color:var(--ink); background:#0c0a07; border:1px solid var(--line); border-radius:2px; padding:3px 6px}
+  .drsel select:hover{border-color:var(--gold-deep)}
+  .drflag{display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--ink-dim); cursor:pointer; user-select:none; white-space:nowrap}
+  .dr-hideflag{color:var(--blood-bright)}
+  .drrow.hideon{opacity:.72}
+  .drrow.hideon .iconpick,.drrow.hideon .dr-color,.drrow.hideon .dr-op,.drrow.hideon .dr-size,.drrow.hideon .dr-label,.drrow.hideon .opv{opacity:.4; pointer-events:none}
   /* consolidated HP-bar card: per-rarity grid + shared geometry footer */
-  .hpgrid{display:grid; grid-template-columns:64px 44px 1fr 30px 1fr; gap:9px 11px; align-items:center; padding:4px 0 2px}
+  .hpgrid{display:grid; grid-template-columns:64px 1fr 30px 1fr; gap:9px 11px; align-items:center; padding:4px 0 2px}
   .hpgrid .hph{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); text-align:right}
   .hpgrid .hph:first-child{text-align:left}
   .hpgrid .hpr{font-size:12px; color:var(--ink)}
@@ -239,6 +266,26 @@ internal static class DashboardHtml
   .iconpick .ipcar{margin-left:auto; color:var(--ink-faint); font-size:8px}
   #iconPop{position:fixed; z-index:1000; display:none; background:var(--panel2); border:1px solid var(--gold-deep); border-radius:4px; box-shadow:var(--shadow); padding:8px; max-height:300px; overflow:auto}
   #iconPop.open{display:block}
+  /* Add-rule picker modal: browse live entities + terrain tiles. */
+  #pickPop{position:fixed; inset:0; z-index:1100; display:none; background:rgba(0,0,0,.62); padding:6vh 4vw}
+  #pickPop.open{display:flex; justify-content:center; align-items:flex-start}
+  .pickbox{display:flex; flex-direction:column; width:min(760px,100%); max-height:88vh; background:var(--panel); border:1px solid var(--gold-deep); border-radius:6px; box-shadow:var(--shadow); overflow:hidden}
+  .pickhead{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--line)}
+  .pickhead #pickSearch{flex:1; font-family:inherit; font-size:13px; color:var(--ink); background:#0c0a07; border:1px solid var(--line); border-radius:3px; padding:8px 11px}
+  .pickkinds{display:inline-flex; gap:3px}
+  .pickclose{font-size:13px; color:var(--ink-dim); background:transparent; border:1px solid var(--line); border-radius:3px; padding:6px 10px; cursor:pointer}
+  .pickclose:hover{color:var(--blood-bright); border-color:var(--blood)}
+  .picklist{overflow:auto; padding:4px 0}
+  .pickrow{display:flex; align-items:center; gap:10px; padding:7px 14px; cursor:pointer; border-bottom:1px dotted var(--line-soft)}
+  .pickrow:hover{background:var(--panel2)}
+  .pickbadge{flex:none; font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-dim); background:#0c0a07; border:1px solid var(--line); border-radius:8px; padding:2px 7px; min-width:58px; text-align:center}
+  .pickbadge.tile{color:var(--poi); border-color:var(--poi)}
+  .pickbadge.entity{color:var(--gold)}
+  .picknm{flex:none; font-weight:600; color:var(--ink); max-width:230px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .picksub{flex:1; min-width:0; color:var(--ink-faint); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .pickrar{flex:none; font-size:10px; color:var(--rare)}
+  .pickempty{padding:24px 14px; color:var(--ink-faint); font-style:italic; text-align:center}
+  .pickfoot{padding:9px 14px; border-top:1px solid var(--line); color:var(--ink-faint); font-size:11px}
   .ipop-grid{display:grid; grid-template-columns:repeat(6,38px); gap:4px}
   .ipop-cell{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; width:38px; height:40px; border:1px solid transparent; border-radius:3px; cursor:pointer; color:var(--ink)}
   .ipop-cell:hover{border-color:var(--gold); background:#0c0a07}
@@ -303,74 +350,29 @@ internal static class DashboardHtml
 
     <main>
       <div class="tabs">
-        <button class="tab on" data-tab="dashboard">Dashboard</button>
-        <button class="tab" data-tab="filters">Filters</button>
+        <button class="tab on" data-tab="filters">Rules</button>
         <button class="tab" data-tab="settings">Settings</button>
       </div>
 
-      <section class="view" data-view="dashboard">
-        <div class="controls">
-          <input type="search" id="navSearch" placeholder="search entities, landmarks, tiles…" />
-          <button class="chip on" id="navAlive">Alive only</button>
-          <button class="chip" id="navClear">Clear paths</button>
-          <span style="color:var(--ink-faint);font-size:11px" id="navCount"></span>
-        </div>
-        <div class="controls" id="kindChips">
-          <button class="chip on" data-kind="all">All</button>
-          <button class="chip" data-kind="landmarks">Landmarks &amp; tiles</button>
-          <button class="chip" data-kind="entities">Entities</button>
-        </div>
-        <div id="navList"></div>
-        <div class="empty" id="navEmpty" hidden>Nothing to navigate to here.</div>
-      </section>
-
-      <section class="view" data-view="filters" hidden>
+      <section class="view" data-view="filters">
         <div class="panel-grid">
           <div class="card" style="grid-column:1/-1">
-            <h3>Watched <span class="tag">&middot; highlight + label by metadata</span></h3>
-            <div class="row"><div class="rl hint-row">Entities whose metadata contains a pattern are force-drawn in this color/shape/size with the label shown next to them &mdash; even if their category is normally filtered. First enabled match wins.</div></div>
-            <div id="watchList"></div>
-            <div class="mechrow">
-              <div class="top">
-                <input class="mname" id="watchPattern" placeholder="metadata pattern (e.g. Strongbox)">
-                <input class="mname" id="watchLabel" placeholder="label (e.g. Strongbox)">
-                <button class="addbtn" id="watchAdd" style="width:auto;margin:0;padding:8px 16px">+ Add</button>
-              </div>
+            <h3>Display Rules <span class="tag">&middot; one ordered ruleset &mdash; first match wins</span></h3>
+            <div class="row"><div class="rl hint-row">The single source of truth for how every entity draws. Each entity is matched <b>top&ndash;to&ndash;bottom</b>; the <b>first enabled rule that matches</b> decides everything &mdash; its icon &amp; color, whether it&rsquo;s hidden, whether it shows an HP bar, and whether it&rsquo;s auto-pathed. Reorder with &#9650;/&#9660; to change precedence. A rule matches on any mix of <i>type, metadata terms, rarity, reaction, life, chest/POI/encounter state</i>; a blank condition means &ldquo;any&rdquo;. No more conflicting filters &mdash; if two rules could match, the higher one wins.</div></div>
+            <div id="drList"></div>
+            <div class="controls" style="margin:8px 0 0">
+              <button class="addbtn" id="drPick" style="width:auto;margin:0;padding:9px 16px">+ Add from game data…</button>
+              <button class="addbtn" id="drAdd" style="width:auto;margin:0;padding:9px 16px">+ Add blank rule</button>
             </div>
           </div>
           <div class="card" style="grid-column:1/-1">
-            <h3>Hidden <span class="tag">&middot; cull from radar, list &amp; nav</span></h3>
-            <div class="row"><div class="rl hint-row">Entities whose metadata contains a pattern (or matches a <code>*</code>/<code>?</code> glob) are removed everywhere &mdash; overlay, entity list, and navigation.</div></div>
+            <h3>Hidden <span class="tag">&middot; cull entirely from radar, list &amp; nav</span></h3>
+            <div class="row"><div class="rl hint-row">A stronger cut than a Hide rule: entities whose metadata contains a pattern (or matches a <code>*</code>/<code>?</code> glob) are removed <i>everywhere</i> &mdash; overlay, entity list, and navigation &mdash; before the display rules even run.</div></div>
             <div id="hideList" class="controls" style="margin:8px 0 14px"></div>
             <div class="controls" style="margin:0">
               <input type="search" id="hidePattern" placeholder="pattern or glob to hide (e.g. AbyssCrack, *Daemon*)">
               <button class="addbtn" id="hideAdd" style="width:auto;margin:0;padding:8px 16px">+ Hide</button>
             </div>
-          </div>
-          <div class="card" style="grid-column:1/-1">
-            <h3>Auto-path patterns <span class="tag">&middot; auto-select nav targets on zone entry</span></h3>
-            <div class="row"><div class="rl hint-row">On entering a zone, every navigation target whose tile path / entity metadata contains one of these is auto-selected for path drawing (up to 8). Clear all to disable.</div></div>
-            <div id="autoNavList" class="controls" style="margin:8px 0 12px"></div>
-            <div class="controls" style="margin:0 0 12px">
-              <input type="search" id="autoNavPattern" placeholder="pattern (e.g. Waypoint)">
-              <button class="addbtn" id="autoNavAdd" style="width:auto;margin:0;padding:8px 16px">+ Add</button>
-            </div>
-            <div class="row" style="padding-top:0"><div class="rl hint-row" style="margin-bottom:6px">Suggestions &mdash; click to add:</div></div>
-            <div class="controls" id="autoNavSuggest" style="margin:0"></div>
-          </div>
-          <div class="card" style="grid-column:1/-1">
-            <h3>Landmark tiles <span class="tag">&middot; surface terrain tiles as map markers (shown anywhere)</span></h3>
-            <div class="row"><div class="rl hint-row">Terrain tiles whose path contains a pattern are surfaced as landmarks &mdash; visible regardless of where you are on the map (unlike entities, which only show in range). Optional label renames them; blank uses the tile's own name. Built-in features (bosses, waypoints, league mechanics) already show &mdash; add your own here.</div></div>
-            <div id="lmpatList"></div>
-            <div class="mechrow">
-              <div class="top">
-                <input class="mname" id="lmpatPattern" placeholder="tile-path pattern (e.g. Vendor, Sanctum, Waygate)">
-                <input class="mname" id="lmpatLabel" placeholder="label (optional)">
-                <button class="addbtn" id="lmpatAdd" style="width:auto;margin:0;padding:8px 16px">+ Add</button>
-              </div>
-            </div>
-            <div class="row" style="padding-top:0"><div class="rl hint-row" style="margin-bottom:6px">Suggestions &mdash; click to add:</div></div>
-            <div class="controls" id="lmpatSuggest" style="margin:0"></div>
           </div>
         </div>
         <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsgF">&#10003; saved to config</span></div>
@@ -380,8 +382,6 @@ internal static class DashboardHtml
         <div class="panel-grid">
           <div class="card">
             <h3>Radar Display</h3>
-            <div class="row"><div class="rl">Show monsters<small>enemy dots on the map overlay</small></div>
-              <label class="sw"><input type="checkbox" data-set="showMonsters"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Show terrain<small>walkable-terrain bitmap</small></div>
               <label class="sw"><input type="checkbox" data-set="showTerrain"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Show player blip<small>blue dot marking your own position</small></div>
@@ -397,25 +397,22 @@ internal static class DashboardHtml
           </div>
           <div class="card">
             <h3>Monster HP Bars <span class="tag">&middot; by rarity</span></h3>
+            <div class="row"><div class="rl hint-row">Show/hide an HP bar per rule via the <b>HP bar</b> checkbox in the <b>Rules</b> tab. Below sets the bar <i>geometry</i> per rarity.</div></div>
             <div class="hpgrid">
-              <span class="hph">Rarity</span><span class="hph">Show</span><span class="hph">Width</span><span class="hph">Border</span><span class="hph">Thick</span>
+              <span class="hph">Rarity</span><span class="hph">Width</span><span class="hph">Border</span><span class="hph">Thick</span>
               <span class="hpr">Normal</span>
-              <label class="sw"><input type="checkbox" data-set="hpBarNormal"><span class="track"></span><span class="knob"></span></label>
               <input class="numin" type="number" step="1" min="4" data-hp="widthNormal">
               <input type="color" class="i-color" data-hpcolor="borderColorNormal">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderNormal">
               <span class="hpr" style="color:var(--magic)">Magic</span>
-              <label class="sw"><input type="checkbox" data-set="hpBarMagic"><span class="track"></span><span class="knob"></span></label>
               <input class="numin" type="number" step="1" min="4" data-hp="widthMagic">
               <input type="color" class="i-color" data-hpcolor="borderColorMagic">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderMagic">
               <span class="hpr" style="color:var(--rare)">Rare</span>
-              <label class="sw"><input type="checkbox" data-set="hpBarRare"><span class="track"></span><span class="knob"></span></label>
               <input class="numin" type="number" step="1" min="4" data-hp="widthRare">
               <input type="color" class="i-color" data-hpcolor="borderColorRare">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderRare">
               <span class="hpr" style="color:var(--unique)">Unique</span>
-              <label class="sw"><input type="checkbox" data-set="hpBarUnique"><span class="track"></span><span class="knob"></span></label>
               <input class="numin" type="number" step="1" min="4" data-hp="widthUnique">
               <input type="color" class="i-color" data-hpcolor="borderColorUnique">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderUnique">
@@ -465,16 +462,6 @@ internal static class DashboardHtml
               <input class="numin" type="number" step="100" min="0" data-set="manaCooldownMs"></div>
             <div class="row"><div class="rl hint-row">F8 toggles auto-flask in-game. Status: <span id="flaskState">&mdash;</span></div></div>
           </div>
-          <div class="card" style="grid-column:1/-1">
-            <h3>Radar Icons <span class="tag">&middot; shape &middot; color &middot; opacity &middot; size</span></h3>
-            <div id="iconStyles"></div>
-          </div>
-          <div class="card" style="grid-column:1/-1">
-            <h3>Mechanics <span class="tag">&middot; metadata-matched icon overrides</span></h3>
-            <div class="row"><div class="rl hint-row">When an entity's metadata contains any comma-separated match term &mdash; and it's one of the selected types &mdash; it draws this icon instead of its generic dot. First enabled match wins.</div></div>
-            <div id="mechList"></div>
-            <button class="addbtn" id="mechAdd">+ Add mechanic</button>
-          </div>
         </div>
         <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsg">&#10003; saved to config</span></div>
       </section>
@@ -486,11 +473,8 @@ internal static class DashboardHtml
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-// Path palette — must match OverlayRenderer.PathPalette (route color by selection slot).
-const PALETTE = ['#33E666','#FF8C1A','#4DB3FF','#FF4DB3','#F2E633','#9966FF','#33FFD9','#FF6666'];
-
-let state=null, zone=null, entities=[], landmarks=[], selected=new Map(); // id -> color slot
-let activeTab='dashboard', kindFilter='all', aliveOnly=true, search='';
+let state=null, zone=null;
+let activeTab='filters';
 
 /* ── tabs ── */
 $$('.tab').forEach(t=>t.onclick=()=>{
@@ -499,10 +483,9 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   $$('.view').forEach(v=>v.hidden = v.dataset.view!==activeTab);
   if(activeTab==='settings') loadSettings();
   if(activeTab==='filters') loadFilters();
-  pump();
 });
 
-/* ── polling ── */
+/* ── polling (left rail vitals/zone/census) ── */
 async function getJSON(u){ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw 0; return r.json(); }
 function setConn(live){ $('#conn').classList.toggle('live',live); $('#connTxt').textContent = live?'live':'offline'; }
 
@@ -512,69 +495,8 @@ async function tick(){
     setConn(true);
     try{ zone = await getJSON('/api/zone'); }catch(e){ zone=null; }
     renderState();
-    if(activeTab==='dashboard'){
-      [entities, landmarks] = await Promise.all([getJSON('/entities?limit=2000'), getJSON('/landmarks')]);
-      await refreshNav();
-    }
-    pump();
   }catch(e){ setConn(false); }
 }
-function pump(){ if(activeTab==='dashboard') renderDashboard(); }
-
-/* ── dashboard: unified, searchable navigation-target list (drives the in-game path) ── */
-async function refreshNav(){
-  try{ const n=await getJSON('/api/nav'); selected=new Map((n.selected||[]).map(x=>[x.id, x.slot])); }catch(e){}
-}
-async function navToggle(id){
-  if(selected.has(id)) selected.delete(id); else selected.set(id, selected.size); // optimistic
-  renderDashboard();
-  try{ await fetch('/api/nav',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:id})}); }catch(e){}
-  await refreshNav(); renderDashboard();
-}
-async function navClearAll(){
-  selected.clear(); renderDashboard();
-  try{ await fetch('/api/nav',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clear:true})}); }catch(e){}
-  await refreshNav(); renderDashboard();
-}
-function prettify(m){
-  if(!m) return 'Unknown';
-  const s=m.split('/').pop().replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/\s*\d+$/,'').trim();
-  return s||m;
-}
-function navRows(){
-  const rows=[];
-  for(const l of landmarks) rows.push({id:'t:'+l.path, name:l.curatedName||l.name||'Landmark', kind:'Landmark', tag:'tile', dist:l.dist, key:l.path||''});
-  for(const e of entities){
-    if(aliveOnly && !e.alive) continue;
-    const tag = e.poi ? 'POI' : (e.rarity && e.rarity!=='NonMonster' ? e.rarity : e.category);
-    rows.push({id:'e:'+e.id, name:e.name||prettify(e.metadata), kind:e.category, tag, dist:e.dist, key:e.metadata||''});
-  }
-  return rows;
-}
-function renderDashboard(){
-  let rows=navRows();
-  if(kindFilter==='landmarks') rows=rows.filter(r=>r.kind==='Landmark');
-  else if(kindFilter==='entities') rows=rows.filter(r=>r.kind!=='Landmark');
-  if(search) rows=rows.filter(r=>r.name.toLowerCase().includes(search)||r.key.toLowerCase().includes(search));
-  rows.sort((a,b)=>{ const sa=selected.has(a.id), sb=selected.has(b.id); if(sa!==sb) return sa?-1:1; return (a.dist||0)-(b.dist||0); });
-  const shown=rows.slice(0,400);
-  $('#navCount').textContent = rows.length+' targets'+(rows.length>shown.length?' · showing 400':'');
-  $('#navEmpty').hidden = rows.length>0;
-  $('#navList').innerHTML = shown.map(r=>{
-    const sel=selected.has(r.id), col=sel?PALETTE[(selected.get(r.id)||0)%8]:'';
-    return `<div class="navrow${sel?' sel':''}" data-id="${(r.id||'').replace(/"/g,'&quot;')}">
-      <span class="navbtn" style="${sel?'background:'+col+';border-color:'+col:''}">${sel?'●':'○'}</span>
-      <span class="navname">${r.name}</span>
-      <span class="navtag">${r.tag}</span>
-      <span class="navdist">${r.dist}</span>
-    </div>`;
-  }).join('');
-  $$('#navList .navrow').forEach(el=>el.onclick=()=>navToggle(el.dataset.id));
-}
-$('#navSearch').oninput=e=>{ search=e.target.value.toLowerCase(); renderDashboard(); };
-$('#navAlive').onclick=()=>{ aliveOnly=!aliveOnly; $('#navAlive').classList.toggle('on',aliveOnly); renderDashboard(); };
-$('#navClear').onclick=navClearAll;
-$$('#kindChips .chip').forEach(c=>c.onclick=()=>{ kindFilter=c.dataset.kind; $$('#kindChips .chip').forEach(x=>x.classList.toggle('on',x===c)); renderDashboard(); });
 
 /* ── settings tab (writes radar/visual + flask via the loopback-gated /api/settings) ── */
 async function loadSettings(){
@@ -586,10 +508,9 @@ async function loadSettings(){
       else if(el.classList.contains('keyin')) el.value=vkToChar(s[k]);
       else if(s[k]!==undefined) el.value=s[k];
     });
-    styles = s.styles || null;
     hpBars = s.hpBars || null;
     terrain = s.terrain || null;
-    renderHpBars(); renderTerrain(); renderIcons(); renderMechanics();
+    renderHpBars(); renderTerrain();
   }catch(e){}
 }
 async function saveSetting(key,val){
@@ -773,56 +694,163 @@ function renderMechanics(){
     row.querySelector('.m-del').onclick=()=>{ styles.mechanics.splice(+row.dataset.i,1); renderMechanics(); saveStyles(); };
   });
 }
-$('#mechAdd').onclick=()=>{ if(!styles) return; styles.mechanics=styles.mechanics||[]; styles.mechanics.push({enabled:true,name:'New',match:[],shape:'Star',color:'#ffd926',opacity:1,size:6}); renderMechanics(); saveStyles(); };
-
-/* ── Filters tab: Watched highlight rules + Hidden cull patterns + Auto-path patterns ── */
-let watched=[], hidden=[], autoNav=[], lmpat=[];
-const AUTONAV_SUGGEST=['AreaTransition','Waypoint','Checkpoint','QuestChest','QuestObject','Shrine','Strongbox','ExpeditionEncounter','Ritual','Breach'];
-const LMPAT_SUGGEST=['Vendor','Sanctum','Trial','Vaal','Waygate','Arena','Strongbox'];
+/* ── Rules tab: unified Display Rules + Hidden cull patterns ── */
+let hidden=[], drules=[];
 function flashF(){ const m=$('#savedMsgF'); if(!m) return; m.classList.add('show'); clearTimeout(m._t); m._t=setTimeout(()=>m.classList.remove('show'),1100); }
-async function postWatched(body){ try{ await fetch('/api/watched',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); flashF(); }catch(e){} }
 async function postHidden(body){ try{ await fetch('/api/hidden',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); flashF(); }catch(e){} }
 async function loadFilters(){
-  try{ const w=await getJSON('/api/watched'); watched=w.rules||[]; }catch(e){ watched=[]; }
+  await loadDrules();
   try{ const h=await getJSON('/api/hidden'); hidden=h.patterns||[]; }catch(e){ hidden=[]; }
-  try{ const s=await getJSON('/api/settings'); autoNav=s.autoNavPatterns||[]; }catch(e){ autoNav=[]; }
-  try{ const l=await getJSON('/api/landmark-patterns'); lmpat=l.patterns||[]; }catch(e){ lmpat=[]; }
-  renderWatched(); renderHidden(); renderAutoNav(); renderLmpat();
+  renderHidden();
 }
-function watchRow(w){
-  return `<div class="mechrow" data-p="${esc(w.pattern)}">
-    <div class="top">
-      <label class="sw"><input type="checkbox" class="w-en"${w.enabled?' checked':''}><span class="track"></span><span class="knob"></span></label>
-      <input class="mname w-label" value="${esc(w.label)}" placeholder="label">
-      <button class="delbtn w-del">Remove</button>
+
+/* ── Display Rules: the unified ordered ruleset. The page holds the array, edits it, and re-POSTs
+   the WHOLE list on any change (add / remove / reorder / toggle / field) — same pattern styles used. ── */
+const DR_CATS=['Monster','Chest','Npc','Object','Other','Transition','Player','Tile'];
+const DR_SELECTS=[['rarity','Rarity',['Normal','Magic','Rare','Unique']],['reaction','Reaction',['Hostile','Friendly']],
+  ['life','Life',['Alive','Dead']],['chest','Chest',['Opened','Unopened']],['poi','POI',['Yes','No']],['encounter','Encounter',['Active','Complete']]];
+async function saveDrules(){ try{ await fetch('/api/display-rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rules:drules})}); flashF(); }catch(e){} }
+async function loadDrules(){ try{ const r=await getJSON('/api/display-rules'); drules=r.rules||[]; }catch(e){ drules=[]; } renderDrules(); }
+function drSel(f,l,o,cur){ return `<label class="drsel">${l}<select class="dr-cond" data-f="${f}"><option value=""${!cur?' selected':''}>any</option>`
+  +o.map(x=>`<option${cur===x?' selected':''}>${x}</option>`).join('')+`</select></label>`; }
+/* Concise matcher→action summary shown on the collapsed row so the list stays scannable. */
+function drSummary(r){
+  const p=[];
+  p.push((r.categories&&r.categories.length)?r.categories.join('/'):'any type');
+  if(r.match&&r.match.length) p.push('“'+r.match.join(', ')+'”');
+  ['rarity','reaction','life','chest','poi','encounter'].forEach(f=>{ if(r[f]) p.push(r[f]); });
+  return esc(p.join(' · '));
+}
+function drRow(r,i){
+  const open=!!r._open, cats=r.categories||[];
+  const badges=(r.hide?'<span class="drbadge hide">hide</span>':'')
+    +(r.hpBar?'<span class="drbadge">HP</span>':'')
+    +(r.navigable?'<span class="drbadge">path</span>':'');
+  const body=open?`<div class="drbody">
+      <div class="top"><input class="mname dr-name" value="${esc(r.name)}" placeholder="rule name"></div>
+      <input class="matchin dr-match" placeholder="match: metadata terms, comma-separated (blank = any)" value="${esc((r.match||[]).join(', '))}">
+      <div class="mcats"><span class="mcats-lbl">Type</span>${DR_CATS.map(c=>
+        `<label class="catchip${cats.includes(c)?' on':''}"><input type="checkbox" class="dr-cat" data-cat="${c}"${cats.includes(c)?' checked':''}>${c}</label>`).join('')}</div>
+      <div class="drconds">${DR_SELECTS.map(([f,l,o])=>drSel(f,l,o,r[f])).join('')}</div>
+      <div class="ctl">
+        <label class="drflag dr-hideflag" title="hide matching entities entirely"><input type="checkbox" class="dr-hide"${r.hide?' checked':''}> Hide</label>
+        ${pickerHtml(r.shape,r.color)}
+        <input type="color" class="dr-color" value="${r.color||'#ffffff'}">
+        <input type="range" class="op dr-op" min="0" max="100" value="${pct(r.opacity)}"><span class="opv">${pct(r.opacity)}%</span>
+        <input type="number" class="numin sz dr-size" step="0.1" min="0.5" value="${r.size}">
+        <input class="mname dr-label" style="flex:1;min-width:70px" value="${esc(r.label||'')}" placeholder="label (optional)">
+        <label class="drflag" title="show a world-space HP bar (monsters)"><input type="checkbox" class="dr-hp"${r.hpBar?' checked':''}> HP bar</label>
+        <label class="drflag" title="qualify as an auto-path navigation target"><input type="checkbox" class="dr-nav"${r.navigable?' checked':''}> Auto-path</label>
+      </div>
+    </div>`:'';
+  return `<div class="mechrow drrow${r.hide?' hideon':''}${open?' open':''}${r.enabled?'':' off'}" data-i="${i}">
+    <div class="drhead">
+      <label class="sw" title="enabled"><input type="checkbox" class="dr-en"${r.enabled?' checked':''}><span class="track"></span><span class="knob"></span></label>
+      <span class="drcaret">${open?'▾':'▸'}</span>
+      <span class="drswatch" style="color:${r.color||'#fff'}">${r.hide?'':iconSvg(r.shape,r.color)}</span>
+      <span class="drnm">${esc(r.name||'(unnamed)')}</span>
+      <span class="drsum">${drSummary(r)}</span>
+      <span class="drbadges">${badges}</span>
+      <span class="drord"><button class="ordbtn dr-up" title="higher precedence">▲</button><button class="ordbtn dr-dn" title="lower precedence">▼</button></span>
+      <button class="delbtn dr-del" title="remove">✕</button>
     </div>
-    <div class="matchin" style="border:none;padding:0 0 6px;color:var(--ink-faint)">matches: <code>${esc(w.pattern)}</code></div>
-    <div class="ctl">
-      ${pickerHtml(w.shape,w.color)}
-      <input type="color" class="w-color" value="${w.color||'#ffffff'}">
-      <input type="number" class="numin sz w-size" step="0.1" min="0.5" value="${w.size}">
-    </div>
+    ${body}
   </div>`;
 }
-function renderWatched(){
-  $('#watchList').innerHTML = watched.map(watchRow).join('') || '<div class="row"><div class="rl hint-row">No watch rules yet.</div></div>';
-  $$('#watchList .mechrow').forEach(row=>{
-    const p=row.dataset.p, w=watched.find(x=>x.pattern===p); if(!w) return;
+function renderDrules(){
+  const host=$('#drList'); if(!host) return;
+  host.innerHTML = drules.length ? drules.map(drRow).join('') : '<div class="row"><div class="rl hint-row">No display rules yet. Add one below.</div></div>';
+  $$('#drList .drrow').forEach(row=>{
+    const i=+row.dataset.i, r=drules[i]; if(!r) return;
+    const save=saveDrules;
+    // Header (always present): click anywhere except a control toggles expand.
+    row.querySelector('.drhead').onclick=e=>{ if(e.target.closest('input,button,select,label,.drord')) return; r._open=!r._open; renderDrules(); };
+    row.querySelector('.dr-en').onchange=e=>{ r.enabled=e.target.checked; row.classList.toggle('off',!r.enabled); save(); };
+    row.querySelector('.dr-up').onclick=()=>{ if(i>0){ const t=drules[i-1]; drules[i-1]=drules[i]; drules[i]=t; renderDrules(); save(); } };
+    row.querySelector('.dr-dn').onclick=()=>{ if(i<drules.length-1){ const t=drules[i+1]; drules[i+1]=drules[i]; drules[i]=t; renderDrules(); save(); } };
+    row.querySelector('.dr-del').onclick=()=>{ drules.splice(i,1); renderDrules(); save(); };
+    if(!r._open) return; // body controls only exist when expanded
     const pk=row.querySelector('.iconpick');
-    row.querySelector('.w-en').onchange=e=>{ w.enabled=e.target.checked; postWatched({update:{pattern:p,enabled:w.enabled}}); };
-    row.querySelector('.w-label').onchange=e=>{ w.label=e.target.value; postWatched({update:{pattern:p,label:w.label}}); };
-    pk.onclick=()=>openIconPicker(pk,w.shape,n=>{ w.shape=n; refreshPicker(pk,n,w.color); postWatched({update:{pattern:p,shape:n}}); });
-    row.querySelector('.w-color').onchange=e=>{ w.color=e.target.value; refreshPicker(pk,w.shape,w.color); postWatched({update:{pattern:p,color:w.color}}); };
-    row.querySelector('.w-size').onchange=e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)){ w.size=v; postWatched({update:{pattern:p,size:v}}); } };
-    row.querySelector('.w-del').onclick=()=>{ postWatched({remove:p}).then(loadFilters); };
+    row.querySelector('.dr-name').onchange=e=>{ r.name=e.target.value; save(); };
+    row.querySelector('.dr-match').onchange=e=>{ r.match=e.target.value.split(',').map(s=>s.trim()).filter(Boolean); save(); };
+    row.querySelectorAll('.dr-cat').forEach(cb=>cb.onchange=()=>{ r.categories=[...row.querySelectorAll('.dr-cat:checked')].map(c=>c.dataset.cat); cb.closest('.catchip').classList.toggle('on',cb.checked); save(); });
+    row.querySelectorAll('.dr-cond').forEach(sel=>sel.onchange=()=>{ r[sel.dataset.f]=sel.value||null; save(); });
+    row.querySelector('.dr-hide').onchange=e=>{ r.hide=e.target.checked; row.classList.toggle('hideon',r.hide); save(); };
+    pk.onclick=()=>openIconPicker(pk,r.shape,n=>{ r.shape=n; refreshPicker(pk,n,r.color); save(); });
+    row.querySelector('.dr-color').onchange=e=>{ r.color=e.target.value; refreshPicker(pk,r.shape,r.color); save(); };
+    const op=row.querySelector('.dr-op'),opv=row.querySelector('.opv'); op.oninput=()=>opv.textContent=op.value+'%'; op.onchange=()=>{ r.opacity=(+op.value)/100; save(); };
+    row.querySelector('.dr-size').onchange=e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)){ r.size=v; save(); } };
+    row.querySelector('.dr-label').onchange=e=>{ r.label=e.target.value; save(); };
+    row.querySelector('.dr-hp').onchange=e=>{ r.hpBar=e.target.checked; save(); };
+    row.querySelector('.dr-nav').onchange=e=>{ r.navigable=e.target.checked; save(); };
   });
 }
-$('#watchAdd').onclick=()=>{
-  const pattern=$('#watchPattern').value.trim(); if(!pattern) return;
-  const label=$('#watchLabel').value.trim()||pattern;
-  $('#watchPattern').value=''; $('#watchLabel').value='';
-  postWatched({add:{pattern,label,color:'#ffd926',shape:'Diamond',size:7}}).then(loadFilters);
-};
+$('#drAdd')?.addEventListener('click',()=>{ drules.push({enabled:true,name:'New rule',categories:[],match:[],shape:'Circle',color:'#ffd926',opacity:1,size:4,_open:true}); renderDrules(); saveDrules(); });
+
+/* ── Add-rule picker: browse the area's live ENTITIES + terrain TILE names, filter, click to seed a
+   rule (entity → entity rule by category; tile → Tile rule). Removes the guesswork of typing metadata. ── */
+let _pickEl=null, _pickEnts=[], _pickTiles=[], _pickKind='all', _pickQ='';
+const lastSeg=s=>((s||'').split('/').pop()||'').replace(/@\d+$/,'').replace(/\.tdt$/i,'');
+function ensurePick(){
+  if(_pickEl) return _pickEl;
+  _pickEl=document.createElement('div'); _pickEl.id='pickPop';
+  _pickEl.innerHTML=`<div class="pickbox">
+    <div class="pickhead">
+      <input id="pickSearch" type="search" placeholder="filter by name / metadata / tile path…">
+      <span class="pickkinds"><button class="chip on" data-k="all">All</button><button class="chip" data-k="entity">Entities</button><button class="chip" data-k="tile">Tiles</button></span>
+      <button class="pickclose" title="close">✕</button>
+    </div>
+    <div class="picklist" id="pickList"></div>
+    <div class="pickfoot">Click a target to add a rule for it (opens expanded to refine). Entities seed an entity rule; tiles seed a Tile rule.</div>
+  </div>`;
+  document.body.appendChild(_pickEl);
+  _pickEl.querySelector('.pickclose').onclick=()=>_pickEl.classList.remove('open');
+  _pickEl.onclick=e=>{ if(e.target===_pickEl) _pickEl.classList.remove('open'); };
+  _pickEl.querySelector('#pickSearch').oninput=e=>{ _pickQ=e.target.value.toLowerCase(); renderPick(); };
+  _pickEl.querySelectorAll('.pickkinds .chip').forEach(c=>c.onclick=()=>{ _pickKind=c.dataset.k; _pickEl.querySelectorAll('.pickkinds .chip').forEach(x=>x.classList.toggle('on',x===c)); renderPick(); });
+  return _pickEl;
+}
+async function openPicker(){
+  const pop=ensurePick(); pop.classList.add('open');
+  _pickQ=''; _pickKind='all';
+  pop.querySelector('#pickSearch').value=''; pop.querySelectorAll('.pickkinds .chip').forEach((x,j)=>x.classList.toggle('on',j===0));
+  $('#pickList').innerHTML='<div class="pickempty">Loading…</div>';
+  try{ _pickEnts=await getJSON('/entities?limit=1000')||[]; }catch(_){ _pickEnts=[]; }
+  try{ const t=await getJSON('/api/tiles'); _pickTiles=(t&&t.tiles)||[]; }catch(_){ _pickTiles=[]; }
+  renderPick(); pop.querySelector('#pickSearch').focus();
+}
+function pickItems(){
+  const q=_pickQ, out=[];
+  if(_pickKind!=='tile'){
+    const seen=new Set();
+    _pickEnts.forEach(e=>{ const k=e.category+'|'+e.metadata; if(seen.has(k))return; seen.add(k);
+      if(q && !((e.metadata||'').toLowerCase().includes(q)||(e.name||'').toLowerCase().includes(q)||(e.category||'').toLowerCase().includes(q)))return;
+      out.push({kind:'entity',cat:e.category,name:e.name||lastSeg(e.metadata),sub:e.metadata,rarity:e.rarity}); });
+  }
+  if(_pickKind!=='entity'){
+    _pickTiles.forEach(p=>{ if(q && !p.toLowerCase().includes(q))return; out.push({kind:'tile',cat:'Tile',name:lastSeg(p),sub:p}); });
+  }
+  return out;
+}
+function renderPick(){
+  const items=pickItems(), list=$('#pickList');
+  list.innerHTML = items.length ? items.slice(0,600).map((it,i)=>
+    `<div class="pickrow" data-i="${i}"><span class="pickbadge ${it.kind}">${it.kind==='tile'?'TILE':esc(it.cat)}</span>`
+    +`<span class="picknm">${esc(it.name)}</span><span class="picksub">${esc(it.sub)}</span>`
+    +(it.rarity&&it.rarity!=='NonMonster'?`<span class="pickrar">${esc(it.rarity)}</span>`:'')+`</div>`).join('')
+    : `<div class="pickempty">No matches${(_pickEnts.length+_pickTiles.length===0)?' — are you in game?':''}.</div>`;
+  $$('#pickList .pickrow').forEach(row=>row.onclick=()=>pickItem(items[+row.dataset.i]));
+}
+function pickItem(it){
+  if(!it) return;
+  const r = it.kind==='tile'
+    ? {enabled:true,name:it.name,categories:['Tile'],match:[lastSeg(it.sub)],shape:'Diamond',color:'#f259f2',opacity:1,size:5,navigable:true,_open:true}
+    : {enabled:true,name:it.name,categories:[it.cat],match:[lastSeg(it.sub)],shape:'Star',color:'#ffd926',opacity:1,size:6,_open:true};
+  drules.unshift(r); renderDrules(); saveDrules();
+  _pickEl.classList.remove('open');
+  const first=$('#drList .drrow'); if(first) first.scrollIntoView({block:'center'});
+}
+$('#drPick')?.addEventListener('click',openPicker);
 function renderHidden(){
   $('#hideList').innerHTML = hidden.length ? hidden.map(p=>
     `<span class="chip on" data-p="${esc(p)}">${esc(p)} <b style="margin-left:5px;cursor:pointer">&#10005;</b></span>`).join('')
@@ -835,65 +863,6 @@ $('#hideAdd').onclick=()=>{
   postHidden({add:p}).then(loadFilters);
 };
 $('#hidePattern').onkeydown=e=>{ if(e.key==='Enter') $('#hideAdd').click(); };
-
-async function saveAutoNav(){ try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoNavPatterns:autoNav})}); flashF(); }catch(e){} }
-function renderAutoNav(){
-  $('#autoNavList').innerHTML = autoNav.length ? autoNav.map(p=>
-    `<span class="chip on" data-p="${esc(p)}">${esc(p)} <b style="margin-left:5px;cursor:pointer">&#10005;</b></span>`).join('')
-    : '<span style="color:var(--ink-faint);font-size:11px;font-style:italic">Auto-path disabled (no patterns).</span>';
-  $$('#autoNavList .chip').forEach(c=>c.querySelector('b').onclick=()=>{ autoNav=autoNav.filter(x=>x!==c.dataset.p); renderAutoNav(); saveAutoNav(); });
-  $('#autoNavSuggest').innerHTML = AUTONAV_SUGGEST.map(p=>{
-    const on=autoNav.some(x=>x.toLowerCase()===p.toLowerCase());
-    return `<span class="chip${on?' on':''}" data-s="${esc(p)}">${esc(p)}</span>`;
-  }).join('');
-  $$('#autoNavSuggest .chip').forEach(c=>c.onclick=()=>{
-    const p=c.dataset.s; if(autoNav.some(x=>x.toLowerCase()===p.toLowerCase())) return;
-    autoNav.push(p); renderAutoNav(); saveAutoNav();
-  });
-}
-$('#autoNavAdd').onclick=()=>{
-  const p=$('#autoNavPattern').value.trim(); if(!p) return;
-  if(!autoNav.some(x=>x.toLowerCase()===p.toLowerCase())) autoNav.push(p);
-  $('#autoNavPattern').value=''; renderAutoNav(); saveAutoNav();
-};
-$('#autoNavPattern').onkeydown=e=>{ if(e.key==='Enter') $('#autoNavAdd').click(); };
-
-/* ── landmark tile patterns (user-surfaced terrain landmarks) ── */
-async function postLmpat(body){ try{ await fetch('/api/landmark-patterns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); flashF(); }catch(e){} }
-function lmpatRow(p){
-  return `<div class="mechrow" data-p="${esc(p.pattern)}">
-    <div class="top">
-      <label class="sw"><input type="checkbox" class="lp-en"${p.enabled?' checked':''}><span class="track"></span><span class="knob"></span></label>
-      <input class="mname lp-label" value="${esc(p.label)}" placeholder="label (optional)">
-      <button class="delbtn lp-del">Remove</button>
-    </div>
-    <div class="matchin" style="border:none;padding:0;color:var(--ink-faint)">matches tile path: <code>${esc(p.pattern)}</code></div>
-  </div>`;
-}
-function renderLmpat(){
-  $('#lmpatList').innerHTML = lmpat.map(lmpatRow).join('') || '<div class="row"><div class="rl hint-row">No custom landmark patterns. Built-in features still show.</div></div>';
-  $$('#lmpatList .mechrow').forEach(row=>{
-    const p=row.dataset.p, e=lmpat.find(x=>x.pattern===p); if(!e) return;
-    row.querySelector('.lp-en').onchange=ev=>{ e.enabled=ev.target.checked; postLmpat({update:{pattern:p,enabled:e.enabled}}); };
-    row.querySelector('.lp-label').onchange=ev=>{ e.label=ev.target.value; postLmpat({update:{pattern:p,label:e.label}}); };
-    row.querySelector('.lp-del').onclick=()=>{ postLmpat({remove:p}).then(loadFilters); };
-  });
-  $('#lmpatSuggest').innerHTML = LMPAT_SUGGEST.map(s=>{
-    const on=lmpat.some(x=>x.pattern.toLowerCase()===s.toLowerCase());
-    return `<span class="chip${on?' on':''}" data-s="${esc(s)}">${esc(s)}</span>`;
-  }).join('');
-  $$('#lmpatSuggest .chip').forEach(c=>c.onclick=()=>{
-    const s=c.dataset.s; if(lmpat.some(x=>x.pattern.toLowerCase()===s.toLowerCase())) return;
-    postLmpat({add:{pattern:s}}).then(loadFilters);
-  });
-}
-$('#lmpatAdd').onclick=()=>{
-  const p=$('#lmpatPattern').value.trim(); if(!p) return;
-  const l=$('#lmpatLabel').value.trim();
-  $('#lmpatPattern').value=''; $('#lmpatLabel').value='';
-  postLmpat({add:{pattern:p,label:l}}).then(loadFilters);
-};
-$('#lmpatPattern').onkeydown=e=>{ if(e.key==='Enter') $('#lmpatAdd').click(); };
 
 /* ── left rail ── */
 function renderState(){
@@ -923,7 +892,8 @@ function renderState(){
   } else { zn.hidden=true; }
 }
 
-wireSettings(); wireHpBars(); wireTerrain(); loadIcons().then(loadSettings);
+wireSettings(); wireHpBars(); wireTerrain();
+loadIcons().then(()=>{ loadSettings(); loadFilters(); }); // Rules is the default tab
 tick(); setInterval(tick, 1000);
 </script>
 </body>

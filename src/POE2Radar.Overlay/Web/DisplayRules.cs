@@ -1,0 +1,355 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
+using POE2Radar.Core.Game;
+using POE2Radar.Overlay.Config;
+
+namespace POE2Radar.Overlay.Web;
+
+/// <summary>
+/// One row of the unified display ruleset. A rule is a MATCHER (every set condition must hold;
+/// an empty list / null field means "any") plus an ACTION (hide, or draw with a style/label/HP-bar).
+/// The ruleset is an ORDERED list evaluated top-down per entity — the first enabled rule that matches
+/// decides the entity's fate, so precedence is explicit (list order) and the old watched-vs-mechanic-
+/// vs-category conflicts are impossible by construction. Mutable + JSON-serialized (object-initializer
+/// shape, like <see cref="MechanicStyle"/>); treated as immutable once in a snapshot.
+/// </summary>
+public sealed class DisplayRule
+{
+    public bool Enabled { get; set; } = true;
+    public string Name { get; set; } = "";
+
+    // ── Matcher (unset = "any") ──
+    public List<string> Categories { get; set; } = new();   // EntityCategory names; empty = any
+    public List<string> Match { get; set; } = new();        // metadata terms (substring, or glob if it has * / ?); ANY-of; empty = any
+    public string? Rarity { get; set; }                     // Normal | Magic | Rare | Unique
+    public string? Reaction { get; set; }                   // Hostile | Friendly
+    public string? Life { get; set; }                       // Alive | Dead
+    public string? Chest { get; set; }                      // Opened | Unopened
+    public string? Poi { get; set; }                        // Yes | No   (game MinimapIcon present)
+    public string? Encounter { get; set; }                  // Active | Complete   (IconComplete faded state)
+
+    // ── Action ──
+    public bool Hide { get; set; }                          // match → stop, don't draw
+    public string Shape { get; set; } = "Circle";
+    public string Color { get; set; } = "#FFFFFF";
+    public float Opacity { get; set; } = 1f;
+    public float Size { get; set; } = 3f;
+    public string? Label { get; set; }                      // optional text label drawn next to the dot
+    public bool HpBar { get; set; }                         // draw the world-space HP bar (monsters)
+    public bool Navigable { get; set; }                     // reserved (Phase 2): qualifies as a nav target
+}
+
+/// <summary>
+/// Ordered display ruleset — the single source of truth for per-entity visibility/icon/label/HP-bar.
+/// Modeled on <see cref="WatchedEntities"/> / <see cref="LandmarkPatterns"/>: JSON-persisted, mutated
+/// under a lock, read lock-free on the render thread via a volatile precompiled snapshot, with a
+/// <see cref="Generation"/> counter so the tick loop notices live edits. <see cref="Resolve"/> is the
+/// hot path (called per entity per frame) and must stay allocation-free.
+/// </summary>
+public sealed class DisplayRules
+{
+    private readonly string _filePath;
+    private readonly object _gate = new();
+    private List<DisplayRule> _rules = new();           // under _gate (authoritative, ordered)
+    private volatile Compiled[] _snapshot = Array.Empty<Compiled>(); // immutable; lock-free reads
+    private volatile int _generation;
+
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, // keep the file tidy (omit "any" fields)
+    };
+
+    public DisplayRules(string filePath)
+    {
+        _filePath = filePath;
+        Load();
+        Rebuild();
+    }
+
+    /// <summary>Bumped on every mutation so the tick loop can detect a live edit (same pattern as
+    /// <see cref="LandmarkPatterns.Generation"/>). The snapshot itself is already live; this is a marker.</summary>
+    public int Generation => _generation;
+
+    /// <summary>Whether any rules are loaded (used to decide if a migration must seed defaults).</summary>
+    public int Count { get { lock (_gate) return _rules.Count; } }
+
+    /// <summary>All rules in order (snapshot copy; safe to enumerate off-thread / serialize for the API).</summary>
+    public IReadOnlyList<DisplayRule> All { get { lock (_gate) return _rules.ToList(); } }
+
+    /// <summary>
+    /// The first ENABLED rule that matches the entity, or null if none (→ not drawn). Lock-free hot path:
+    /// reads the volatile precompiled snapshot. The returned rule's action fields tell the caller whether
+    /// to hide or how to draw.
+    /// </summary>
+    public DisplayRule? Resolve(Poe2Live.EntityDot e)
+    {
+        var snap = _snapshot;
+        foreach (var c in snap)
+            if (c.Matches(in e)) return c.Rule;
+        return null;
+    }
+
+    /// <summary>
+    /// Resolve a terrain TILE path to its first matching enabled rule of the special "Tile" category,
+    /// or null. Tiles aren't entities, so a Tile rule matches purely on its <see cref="DisplayRule.Match"/>
+    /// terms (path substrings/globs); the other conditions are ignored. <paramref name="requireMatch"/>
+    /// distinguishes the two passes: the SURFACING pass (true) only lets a Tile rule with explicit match
+    /// terms pull a NEW tile onto the map; the STYLING pass (false) lets an empty-match Tile rule restyle
+    /// any already-surfaced landmark. The matched rule's shape/color/size/label/hide then style it.
+    /// </summary>
+    public DisplayRule? ResolveTile(string path, bool requireMatch)
+    {
+        var snap = _snapshot;
+        foreach (var c in snap)
+            if (c.MatchesTile(path, requireMatch)) return c.Rule;
+        return null;
+    }
+
+    /// <summary>Replace the entire ordered ruleset (used by the API "set whole list" path and by
+    /// migration). Persists + recompiles + bumps the generation.</summary>
+    public void Replace(IEnumerable<DisplayRule> rules)
+    {
+        lock (_gate)
+        {
+            _rules = rules.ToList();
+            Rebuild(); Save();
+        }
+    }
+
+    /// <summary>Append a rule (to the end = lowest precedence). Persists + recompiles.</summary>
+    public void Add(DisplayRule rule)
+    {
+        lock (_gate) { _rules.Add(rule); Rebuild(); Save(); }
+    }
+
+    /// <summary>Remove the rule at <paramref name="index"/> (no-op if out of range).</summary>
+    public void RemoveAt(int index)
+    {
+        lock (_gate)
+        {
+            if (index < 0 || index >= _rules.Count) return;
+            _rules.RemoveAt(index); Rebuild(); Save();
+        }
+    }
+
+    /// <summary>Move the rule at <paramref name="from"/> to <paramref name="to"/> (reorder = change
+    /// precedence). Indices are clamped; no-op if equal/out of range.</summary>
+    public void Move(int from, int to)
+    {
+        lock (_gate)
+        {
+            if (from < 0 || from >= _rules.Count) return;
+            to = Math.Clamp(to, 0, _rules.Count - 1);
+            if (from == to) return;
+            var r = _rules[from];
+            _rules.RemoveAt(from);
+            _rules.Insert(to, r);
+            Rebuild(); Save();
+        }
+    }
+
+    /// <summary>Replace the rule at <paramref name="index"/> with <paramref name="rule"/>.</summary>
+    public void Update(int index, DisplayRule rule)
+    {
+        lock (_gate)
+        {
+            if (index < 0 || index >= _rules.Count) return;
+            _rules[index] = rule; Rebuild(); Save();
+        }
+    }
+
+    /// <summary>
+    /// Build the default ordered ruleset that REPRODUCES the legacy three-system behavior, used to
+    /// seed <c>display_rules.json</c> on first run. Order encodes the old precedence:
+    /// <list type="number">
+    /// <item>state hides (dead monster / opened chest / completed encounter) — the old IsDrawable gate;</item>
+    /// <item>watched highlights (force-draw + label, any category) — wins over mechanics, as before;</item>
+    /// <item>mechanic overrides (force-draw, category-gated);</item>
+    /// <item>category defaults (hostile monsters by rarity; player; npc; rare/unique chests; transition;
+    ///   Object/Other POIs).</item>
+    /// </list>
+    /// Disabled categories / ShowMonsters-off seed the corresponding rule as <c>Enabled=false</c>.
+    /// (Phase 1 leaves the hidden/junk pre-filters, HP-bar path, and nav qualification external; the
+    /// per-rarity <c>HpBar</c> flags are seeded for a later phase but not yet consulted.)
+    /// </summary>
+    public static List<DisplayRule> BuildDefault(
+        RadarStyles st, bool showMonsters, bool hpNormal, bool hpMagic, bool hpRare, bool hpUnique,
+        IEnumerable<WatchedEntry> watched)
+    {
+        var rules = new List<DisplayRule>();
+
+        // 1) State hides (precede everything — mirror the old IsDrawable corpse/opened/complete gate).
+        rules.Add(new DisplayRule { Name = "Hide dead monsters",        Categories = new() { "Monster" }, Life = "Dead",     Hide = true });
+        rules.Add(new DisplayRule { Name = "Hide opened chests",        Categories = new() { "Chest" },   Chest = "Opened",  Hide = true });
+        rules.Add(new DisplayRule { Name = "Hide completed encounters", Encounter = "Complete",                              Hide = true });
+
+        // 2) Watched highlights (force-draw + label; substring, any category) — before mechanics so
+        //    watched still wins, matching the old DrawMap precedence.
+        foreach (var w in watched)
+            rules.Add(new DisplayRule
+            {
+                Name = string.IsNullOrWhiteSpace(w.Label) ? w.Pattern : w.Label,
+                Enabled = w.Enabled, Match = new() { w.Pattern },
+                Shape = w.Shape, Color = w.Color, Opacity = 1f, Size = w.Size, Label = w.Label,
+            });
+
+        // 3) Mechanic overrides (force-draw, category-gated).
+        foreach (var m in st.Mechanics ?? new())
+            rules.Add(new DisplayRule
+            {
+                Name = m.Name, Enabled = m.Enabled,
+                Categories = new(m.Categories ?? new()), Match = new(m.Match ?? new()),
+                Shape = m.Shape, Color = m.Color, Opacity = m.Opacity, Size = m.Size,
+            });
+
+        // 4) Category defaults.
+        void Mon(string rarity, IconStyle s, bool hp) => rules.Add(new DisplayRule
+        {
+            Name = $"Monster · {rarity}", Enabled = s.Enabled && showMonsters,
+            Categories = new() { "Monster" }, Reaction = "Hostile", Rarity = rarity,
+            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size, HpBar = hp,
+        });
+        Mon("Unique", st.MonsterUnique, hpUnique);
+        Mon("Rare",   st.MonsterRare,   hpRare);
+        Mon("Magic",  st.MonsterMagic,  hpMagic);
+        Mon("Normal", st.MonsterNormal, hpNormal);
+
+        void Cat(string name, string category, string? rarity, IconStyle s) => rules.Add(new DisplayRule
+        {
+            Name = name, Enabled = s.Enabled, Categories = new() { category }, Rarity = rarity,
+            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size,
+        });
+        Cat("Player",        "Player",     null,     st.Player);
+        Cat("NPC",           "Npc",        null,     st.Npc);
+        Cat("Chest · Unique", "Chest", "Unique", st.ChestUnique);
+        Cat("Chest · Rare",   "Chest", "Rare",   st.ChestRare);
+        Cat("Transition",    "Transition", null,     st.Transition);
+
+        // Object/Other entities the game flags as POIs (waypoints, checkpoints, shrines…).
+        rules.Add(new DisplayRule
+        {
+            Name = "Point of Interest", Enabled = st.Poi.Enabled,
+            Categories = new() { "Object", "Other" }, Poi = "Yes",
+            Shape = st.Poi.Shape, Color = st.Poi.Color, Opacity = st.Poi.Opacity, Size = st.Poi.Size,
+        });
+
+        return rules;
+    }
+
+    // ── internals ───────────────────────────────────────────────────────────
+
+    /// <summary>Rebuild the immutable precompiled snapshot + bump generation. Call under <see cref="_gate"/>.</summary>
+    private void Rebuild()
+    {
+        var compiled = new Compiled[_rules.Count];
+        for (var i = 0; i < _rules.Count; i++) compiled[i] = new Compiled(_rules[i]);
+        _snapshot = compiled;
+        _generation++;
+    }
+
+    private void Load()
+    {
+        try
+        {
+            if (!File.Exists(_filePath)) return;
+            var list = JsonSerializer.Deserialize<List<DisplayRule>>(File.ReadAllText(_filePath), Json);
+            if (list != null) _rules = list;
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"Display rules load failed: {ex.Message}"); }
+    }
+
+    private void Save()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(_filePath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(_filePath, JsonSerializer.Serialize(_rules, Json));
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"Display rules save failed: {ex.Message}"); }
+    }
+
+    /// <summary>A rule precompiled for fast matching: category set + metadata matchers (substring/glob)
+    /// + condition codes (0 = any). Built once per Rebuild; immutable thereafter.</summary>
+    private sealed class Compiled
+    {
+        public readonly DisplayRule Rule;
+        private readonly bool _enabled;
+        private readonly bool _isTile;                     // Categories contains "Tile" → matches terrain tiles
+        private readonly HashSet<string>? _cats;          // null = any
+        private readonly (string sub, Regex? glob)[]? _match; // null = any
+        private readonly string? _rarity;                 // lowercased; null = any
+        private readonly int _reaction, _life, _chest, _poi, _enc; // 0 any / 1 / 2
+
+        public Compiled(DisplayRule r)
+        {
+            Rule = r;
+            _enabled = r.Enabled;
+            _cats = r.Categories is { Count: > 0 }
+                ? new HashSet<string>(r.Categories, StringComparer.OrdinalIgnoreCase) : null;
+            _isTile = _cats?.Contains("Tile") ?? false;
+            _match = r.Match is { Count: > 0 }
+                ? r.Match.Where(m => !string.IsNullOrEmpty(m)).Select(CompileTerm).ToArray() : null;
+            if (_match is { Length: 0 }) _match = null;
+            _rarity = string.IsNullOrEmpty(r.Rarity) ? null : r.Rarity;
+            _reaction = Code(r.Reaction, "Friendly", "Hostile");
+            _life     = Code(r.Life, "Alive", "Dead");
+            _chest    = Code(r.Chest, "Opened", "Unopened");
+            _poi      = Code(r.Poi, "Yes", "No");
+            _enc      = Code(r.Encounter, "Active", "Complete");
+        }
+
+        public bool Matches(in Poe2Live.EntityDot e)
+        {
+            if (!_enabled) return false;
+            if (_cats != null && !_cats.Contains(e.Category.ToString())) return false;
+            if (_match != null && !AnyMatch(e.Metadata)) return false;
+            if (_rarity != null && !string.Equals(e.Rarity.ToString(), _rarity, StringComparison.OrdinalIgnoreCase)) return false;
+            if (_reaction == 1 && !e.IsFriendly) return false;
+            if (_reaction == 2 && e.IsFriendly) return false;
+            if (_life == 1 && !e.IsAlive) return false;
+            if (_life == 2 && e.IsAlive) return false;
+            if (_chest == 1 && !e.Opened) return false;
+            if (_chest == 2 && e.Opened) return false;
+            if (_poi == 1 && !e.Poi) return false;
+            if (_poi == 2 && e.Poi) return false;
+            if (_enc == 1 && e.IconComplete) return false;   // "Active" requires not-complete
+            if (_enc == 2 && !e.IconComplete) return false;  // "Complete" requires complete
+            return true;
+        }
+
+        public bool MatchesTile(string path, bool requireMatch)
+        {
+            if (!_enabled || !_isTile) return false;
+            if (_match == null) return !requireMatch; // no terms: styles any tile, but never surfaces one
+            return AnyMatch(path);
+        }
+
+        private bool AnyMatch(string metadata)
+        {
+            foreach (var (sub, glob) in _match!)
+            {
+                if (glob != null) { if (glob.IsMatch(metadata)) return true; }
+                else if (metadata.Contains(sub, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>A term with <c>*</c>/<c>?</c> compiles to an anchored glob regex (mirrors
+        /// <see cref="HiddenEntities"/>); otherwise it's a case-insensitive substring.</summary>
+        private static (string, Regex?) CompileTerm(string term)
+        {
+            if (term.IndexOf('*') < 0 && term.IndexOf('?') < 0) return (term, null);
+            var rx = "^" + Regex.Escape(term).Replace("\\*", ".*").Replace("\\?", ".") + "$";
+            return (term, new Regex(rx, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+        }
+
+        private static int Code(string? v, string one, string two)
+            => string.IsNullOrEmpty(v) ? 0
+             : string.Equals(v, one, StringComparison.OrdinalIgnoreCase) ? 1
+             : string.Equals(v, two, StringComparison.OrdinalIgnoreCase) ? 2 : 0;
+    }
+}

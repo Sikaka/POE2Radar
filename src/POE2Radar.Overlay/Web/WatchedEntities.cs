@@ -42,21 +42,34 @@ public sealed class WatchedEntities
         Rebuild();
     }
 
-    /// <summary>One-time, idempotent repair of configs written by older builds (loaded verbatim).
-    /// The seeded watch pattern "Expedition2Encounter" is a substring of "Expedition2EncounterCrack",
-    /// so it force-drew the transient detonation-effect objects as expedition markers. Rewrite that
-    /// exact stale key to the precise "Expedition2/Expedition2Encounter" (which excludes the cracks),
-    /// preserving the user's label/color/shape. Only touches the exact known-bad key, so any pattern
-    /// the user themselves customized is left alone. Returns true if it changed anything.</summary>
+    /// <summary>One-time, idempotent repair of seeded watch patterns from older builds (loaded
+    /// verbatim). Each fix rewrites an over-broad default key to a precise directory/path term that
+    /// matches the real feature but not unrelated entities, preserving the user's label/color/shape:
+    /// <list type="bullet">
+    /// <item>"Expedition2Encounter" → "Expedition2/Expedition2Encounter" (the bare key is a substring
+    ///   of "Expedition2EncounterCrack", so it tagged the detonation-effect objects).</item>
+    /// <item>"Strongbox" → "StrongBoxes" (the bare key matched the box's …Strongbox monsters and
+    ///   ordinary area chests named "…Strongbox", e.g. KedgeBayChestStrongbox).</item>
+    /// </list>
+    /// Only the EXACT known-bad keys are touched, so any pattern the user customized is left alone.
+    /// Returns true if it changed anything.</summary>
     private bool Migrate()
     {
-        const string stale = "Expedition2Encounter";
-        const string precise = "Expedition2/Expedition2Encounter";
-        if (!_entries.TryGetValue(stale, out var old)) return false;
-        _entries.Remove(stale);
-        if (!_entries.ContainsKey(precise)) _entries[precise] = old with { Pattern = precise };
-        Console.WriteLine("Watched entities: migrated stale \"Expedition2Encounter\" pattern to the precise form.");
-        return true;
+        (string stale, string precise)[] fixes =
+        {
+            ("Expedition2Encounter", "Expedition2/Expedition2Encounter"),
+            ("Strongbox",            "StrongBoxes"),
+        };
+        var changed = false;
+        foreach (var (stale, precise) in fixes)
+        {
+            if (!_entries.TryGetValue(stale, out var old)) continue;
+            _entries.Remove(stale);
+            if (!_entries.ContainsKey(precise)) _entries[precise] = old with { Pattern = precise };
+            Console.WriteLine($"Watched entities: migrated stale \"{stale}\" pattern to \"{precise}\".");
+            changed = true;
+        }
+        return changed;
     }
 
     /// <summary>All rules (snapshot copy; safe to enumerate off-thread).</summary>

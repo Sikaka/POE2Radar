@@ -31,7 +31,11 @@ public sealed class RadarApp : IDisposable
     private readonly HiddenEntities _hidden;
     private readonly WatchedEntities _watched;
     private readonly LandmarkPatterns _landmarkPatterns;
+    private readonly DisplayRules _displayRules;
     private int _landmarkGen;
+    private int _displayRulesGen;
+    private int _appliedClusterGap;
+    private nint _areaInstanceForApi;   // current AreaInstance, for the /api/tiles tile-path lookup
     private volatile RadarState _state = RadarState.Empty;
 
     /// <summary>Directory holding the user config files (shared with <see cref="RadarSettings"/>).</summary>
@@ -93,6 +97,15 @@ public sealed class RadarApp : IDisposable
     private List<SelectedPath> _selectedPaths = new();                   // one route per selected target (from trackers)
     private bool _selectionCapWarned;                                    // log the "cap reached" notice once
     private nint _navTargetsArea = -1;                                   // AreaInstance the auto-nav was applied for
+    // Per-instance nav memory: the nav selection for each AreaInstance hash, so returning to a zone
+    // (e.g. after a town trip, which re-resolves a fresh AreaInstance) RESTORES what was selected
+    // instead of clearing it. AreaHash is the stable per-instance id (same instance → same hash;
+    // a re-rolled map → new hash → fresh auto-nav). In-session only and capped (LRU) so a long
+    // session can't grow it unbounded. _selectionAreaHash is the hash _selectedIds belong to now.
+    private readonly Dictionary<uint, List<string>> _zoneSelections = new();
+    private readonly List<uint> _zoneOrder = new();                      // insertion order, for LRU eviction
+    private uint _selectionAreaHash;
+    private const int MaxRememberedZones = 64;
 
     // ── Collapsible "POE2Radar" navigation menu widget state (drawn always-on; persisted corner). ──
     private bool _navMenuExpanded;                                       // dropdown open? (default collapsed)
@@ -115,12 +128,69 @@ public sealed class RadarApp : IDisposable
         _hidden = new HiddenEntities(Path.Combine(ConfigDir, "hidden_entities.json"));
         _watched = new WatchedEntities(Path.Combine(ConfigDir, "watched_entities.json"));
         _landmarkPatterns = new LandmarkPatterns(Path.Combine(ConfigDir, "landmark_patterns.json"));
-        _live.CustomLandmarkMatch = _landmarkPatterns.Match; // surface user tile patterns as landmarks
+        _live.CustomLandmarkMatch = TileLandmarkMatch; // surface tiles via landmark patterns + Tile rules
         _landmarkGen = _landmarkPatterns.Generation;
-        Console.WriteLine($"Hidden entities: {_hidden.Count} pattern(s); watched: {_watched.All.Count} rule(s); "
-                          + $"landmark patterns: {_landmarkPatterns.All.Count}");
+        _live.LandmarkClusterGap = _settings.LandmarkClusterGap;
+        _appliedClusterGap = _settings.LandmarkClusterGap;
+        // Unified display ruleset — single source of truth for the entity dot decision. On first run
+        // (no display_rules.json) seed it from the legacy category styles + mechanics + watched rules
+        // so behavior is identical; thereafter it's the authoritative, editable, ordered ruleset.
+        _displayRules = new DisplayRules(Path.Combine(ConfigDir, "display_rules.json"));
+        if (_displayRules.Count == 0)
+        {
+            _displayRules.Replace(DisplayRules.BuildDefault(
+                _settings.Styles, _settings.ShowMonsters,
+                _settings.HpBarNormal, _settings.HpBarMagic, _settings.HpBarRare, _settings.HpBarUnique,
+                _watched.All));
+            Console.WriteLine($"Display rules: seeded {_displayRules.Count} from legacy config (first run).");
+        }
+        // One-time: fold any user landmark-tile patterns into Tile display rules (the unified system),
+        // then clear the old config so it's retired and won't double-apply or re-migrate.
+        if (_landmarkPatterns.All.Count > 0)
+        {
+            var rules = _displayRules.All.ToList();
+            var seen = new HashSet<string>(
+                rules.Where(r => r.Categories.Contains("Tile")).SelectMany(r => r.Match), StringComparer.OrdinalIgnoreCase);
+            var added = 0;
+            foreach (var lp in _landmarkPatterns.All)
+            {
+                if (!seen.Add(lp.Pattern)) continue;
+                rules.Add(new DisplayRule
+                {
+                    Enabled = lp.Enabled, Name = string.IsNullOrWhiteSpace(lp.Label) ? lp.Pattern : lp.Label,
+                    Categories = new() { "Tile" }, Match = new() { lp.Pattern },
+                    Shape = "Diamond", Color = "#F259F2", Opacity = 1f, Size = 5f, Navigable = true,
+                    Label = string.IsNullOrWhiteSpace(lp.Label) ? null : lp.Label,
+                });
+                added++;
+            }
+            if (added > 0) _displayRules.Replace(rules);
+            foreach (var lp in _landmarkPatterns.All.ToList()) _landmarkPatterns.Remove(lp.Pattern);
+            Console.WriteLine($"Migrated {added} landmark-tile pattern(s) into Tile display rules.");
+        }
+        // One-time: fold the old AutoNavPatterns list onto matching rules' Auto-path flag (a rule auto-
+        // paths when one of its match terms overlaps a pattern), then retire the list. Preserves the
+        // "auto-path to the expedition encounter on zone entry" default.
+        if (_settings.AutoNavPatterns.Count > 0)
+        {
+            var rules = _displayRules.All.ToList();
+            var pats = _settings.AutoNavPatterns;
+            var changed = false;
+            foreach (var r in rules)
+            {
+                if (r.Navigable) continue;
+                if (r.Match.Any(m => pats.Any(p =>
+                        m.Contains(p, StringComparison.OrdinalIgnoreCase) || p.Contains(m, StringComparison.OrdinalIgnoreCase))))
+                { r.Navigable = true; changed = true; }
+            }
+            if (changed) _displayRules.Replace(rules);
+            _settings.AutoNavPatterns = new(); _settings.Save();
+            Console.WriteLine("Migrated auto-path patterns onto display rules' Auto-path flag.");
+        }
+        _displayRulesGen = _displayRules.Generation;
+        Console.WriteLine($"Hidden entities: {_hidden.Count} pattern(s); display rules: {_displayRules.Count}");
         _api = new ApiServer(() => _state, _settings, GetNavSelection, ToggleNavTarget, ClearNavSelection,
-                             _hidden, _watched, _landmarkPatterns, _settings.ApiPort);
+                             _hidden, _displayRules, CurrentTilePaths, _settings.ApiPort);
         try { _api.Start(); Console.WriteLine($"API on http://localhost:{_settings.ApiPort} (dashboard at /)"); }
         catch (Exception ex) { Console.Error.WriteLine($"API server disabled: {ex.Message}"); }
         Console.WriteLine("Hotkeys: F6=add nearest path target  F7=clear path targets  "
@@ -156,6 +226,7 @@ public sealed class RadarApp : IDisposable
         {
             // AreaInstance is a fresh object per area — use its address to invalidate per-area caches.
             if (areaInstance != _lastAreaInstance) { _terrain = null; _lastAreaInstance = areaInstance; }
+            _areaInstanceForApi = areaInstance; // for /api/tiles
             _areaHash = _live.AreaHash(areaInstance);
             areaLevel = _live.AreaLevel(areaInstance);
 
@@ -184,6 +255,19 @@ public sealed class RadarApp : IDisposable
                     _landmarkGen = _landmarkPatterns.Generation;
                     _live.InvalidateLandmarks();
                 }
+                // A changed display ruleset can add/remove "Tile" rules that surface tiles — rebuild.
+                if (_displayRules.Generation != _displayRulesGen)
+                {
+                    _displayRulesGen = _displayRules.Generation;
+                    _live.InvalidateLandmarks();
+                }
+                // Live-apply a changed cluster radius (dashboard/config edit) the same way.
+                if (_settings.LandmarkClusterGap != _appliedClusterGap)
+                {
+                    _appliedClusterGap = _settings.LandmarkClusterGap;
+                    _live.LandmarkClusterGap = _appliedClusterGap;
+                    _live.InvalidateLandmarks();
+                }
                 _landmarks = _live.Landmarks(areaInstance); // cached per area in Poe2Live
 
                 // Rebuild the unified navigation-target list (tiles + entity POIs) for this tick.
@@ -197,6 +281,11 @@ public sealed class RadarApp : IDisposable
                     _navTargetsArea = areaInstance;
                     OnAreaChanged();
                 }
+
+                // Auto-deselect entity targets the game has marked complete (e.g. a looted expedition):
+                // they're already gone from the map + nav-target list, but the still-present (faded)
+                // entity would otherwise keep resolving, so the route would keep pathing to it.
+                PruneCompletedTargets();
 
                 // Per-tick route maintenance (draw-only, NO A* on this thread). For each selected
                 // target: cheaply advance its cursor; fire a BACKGROUND replan only on a real trigger.
@@ -255,7 +344,8 @@ public sealed class RadarApp : IDisposable
             Styles: _settings.Styles,
             HpBars: _settings.HpBars,
             TerrainStyle: _settings.Terrain,
-            WatchedMatch: _watched.Match);
+            Resolve: _displayRules.Resolve,
+            ResolveTile: p => _displayRules.ResolveTile(p, requireMatch: false));
         // The overlay is only visible while PoE2 is foreground (Render draws nothing otherwise). Skip
         // the whole draw + UpdateLayeredWindow blit when unfocused — but render once on the focus-loss
         // transition so the last visible frame is cleared rather than left frozen on screen.
@@ -421,61 +511,81 @@ public sealed class RadarApp : IDisposable
     // select matching targets.
 
     /// <summary>
-    /// Build the unified navigation-target list for this world tick: every tile landmark first
-    /// (stable order from the cached landmark list), then qualifying entity POIs ordered nearest-
-    /// first. An entity qualifies as a POI when it's alive AND (game-flagged POI via MinimapIcon,
-    /// OR a unique monster, OR its metadata matches an auto-nav pattern). Deduped by stable id.
+    /// Build the unified navigation-target list for this world tick: every tile landmark first, then
+    /// qualifying entity POIs nearest-first. An entity qualifies (is selectable) when it's alive AND
+    /// (game-flagged POI, OR a unique monster, OR its display rule has the Auto-path flag). Each target
+    /// carries <see cref="NavTarget.AutoPath"/> — true when its display rule opts into auto-pathing —
+    /// which drives the zone-entry auto-selection (replacing the old AutoNavPatterns list). Deduped by id.
     /// </summary>
     private List<NavTarget> BuildNavTargets(NumVec2 player)
     {
         var targets = new List<NavTarget>(_landmarks.Count + 16);
         var seen = new HashSet<string>();
 
-        // (a) Tile landmarks — id "t:<path>".
+        // (a) Tile landmarks — id "t:<key>" (per-cluster). Auto-path when a Tile rule opts in.
         foreach (var lm in _landmarks)
         {
-            var id = "t:" + lm.Path;
+            var id = "t:" + lm.Key;
             if (!seen.Add(id)) continue;
-            targets.Add(new NavTarget(id, LandmarkLabel(lm), lm.Center, lm.Path, IsEntity: false));
+            var autoPath = _displayRules.ResolveTile(lm.Path, requireMatch: false)?.Navigable ?? false;
+            targets.Add(new NavTarget(id, LandmarkLabel(lm), lm.Center, lm.Path, IsEntity: false, AutoPath: autoPath));
         }
 
-        // (b) Entity POIs — id "e:<entityId>", nearest-first.
+        // (b) Entity POIs — id "e:<entityId>", nearest-first. Selectable if POI/unique/Auto-path rule;
+        // AutoPath true only when the matched rule's Auto-path flag is set.
         var pois = _entities
-            .Where(e => e.IsAlive && !e.IconComplete &&
-                        (e.Poi
-                         || (e.Category == Poe2Live.EntityCategory.Monster && e.Rarity == Poe2Live.Rarity.Unique)
-                         || MatchesAutoNav(e.Metadata)))
-            .OrderBy(e => NumVec2.DistanceSquared(e.Grid, player));
-        foreach (var e in pois)
+            .Where(e => e.IsAlive && !e.IconComplete)
+            .Select(e => (e, nav: _displayRules.Resolve(e)?.Navigable ?? false))
+            .Where(x => x.e.Poi
+                        || (x.e.Category == Poe2Live.EntityCategory.Monster && x.e.Rarity == Poe2Live.Rarity.Unique)
+                        || x.nav)
+            .OrderBy(x => NumVec2.DistanceSquared(x.e.Grid, player));
+        foreach (var (e, nav) in pois)
         {
             var id = "e:" + e.Id;
             if (!seen.Add(id)) continue;
-            targets.Add(new NavTarget(id, EntityLabel(e.Metadata), e.Grid, e.Metadata, IsEntity: true));
+            targets.Add(new NavTarget(id, EntityLabel(e.Metadata), e.Grid, e.Metadata, IsEntity: true, AutoPath: nav));
         }
 
         return targets;
     }
 
-    /// <summary>Zone change: clear the (stale) selection, then apply the persistent auto-nav patterns
-    /// against the new zone's <see cref="_navTargets"/> so e.g. the expedition encounter is auto-pathed.</summary>
+    /// <summary>Zone change: remember the leaving zone's selection (by its instance hash), then either
+    /// RESTORE the selection we previously had for the zone we're entering (so a town round-trip keeps
+    /// your pathing) or — on a first visit — seed it from the persistent auto-nav patterns. Trackers are
+    /// NOT touched here — the per-tick reconciliation (ReconcileTrackers) syncs them to _selectedIds.</summary>
     private void OnAreaChanged()
     {
-        // Drop the stale selection (under the lock), then apply the persistent auto-nav patterns
-        // against the new zone's targets. Trackers are NOT touched here — the per-tick reconciliation
-        // (ReconcileTrackers) creates/removes them to match _selectedIds; in-flight results for the
-        // now-removed ids are ignored on drain (no matching tracker).
-        int count;
+        int count; bool restored;
         lock (_navLock)
         {
+            // Save what was selected in the zone we're leaving, keyed by ITS instance hash.
+            if (_selectionAreaHash != 0) RememberZoneSelection(_selectionAreaHash, _selectedIds);
+
             _selectedIds.Clear();
             _selectionCapWarned = false;
+            _selectionAreaHash = _areaHash;
 
-            if (_settings.AutoNavPatterns.Count > 0)
+            // Returning to a remembered instance → restore its selection verbatim (the user's explicit
+            // choices win, including an intentionally-empty one, so a zone they cleared stays cleared).
+            List<string>? remembered = null;
+            restored = _areaHash != 0 && _zoneSelections.TryGetValue(_areaHash, out remembered);
+            if (restored)
             {
+                foreach (var id in remembered!)
+                {
+                    if (_selectedIds.Count >= MaxSelectedTargets) break;
+                    if (!_selectedIds.Contains(id)) _selectedIds.Add(id);
+                }
+            }
+            else
+            {
+                // First visit to this instance: auto-select every target whose display rule opted into
+                // auto-pathing (the per-rule "Auto-path" flag), capped so colors/planning stay bounded.
                 foreach (var t in _navTargets)
                 {
                     if (_selectedIds.Count >= MaxSelectedTargets) break;
-                    if (MatchesAutoNav(t.MatchKey) && !_selectedIds.Contains(t.Id))
+                    if (t.AutoPath && !_selectedIds.Contains(t.Id))
                         _selectedIds.Add(t.Id);
                 }
             }
@@ -484,18 +594,64 @@ public sealed class RadarApp : IDisposable
         _selectedPaths = new List<SelectedPath>();
 
         if (count > 0)
-            Console.WriteLine($"\nAuto-nav: selected {count} target(s) on zone change.");
+            Console.WriteLine($"\nNav: {(restored ? "restored" : "auto-selected")} {count} target(s) on zone change.");
     }
 
-    /// <summary>case-insensitive Contains of ANY configured auto-nav pattern against a metadata/path.</summary>
-    private bool MatchesAutoNav(string metadataOrPath)
+    /// <summary>
+    /// Drop selected ENTITY targets the game has marked complete (IconComplete — e.g. a claimed
+    /// expedition / used incursion device). Such an entity is hidden from the map and excluded from
+    /// the nav-target list, but it lingers (faded) in the live entity set, so <see cref="TryResolveTargetGrid"/>
+    /// would still resolve it and the route would keep pathing there. Pruning the id stops the route
+    /// (its tracker is removed by the next ReconcileTrackers) and "sticks" via the per-zone memory.
+    /// <para>Only prunes targets whose entity is PRESENT-and-complete — an entity merely out of network
+    /// range (temporarily absent) is left selected so it resumes when you return to it.</para>
+    /// </summary>
+    private void PruneCompletedTargets()
     {
-        if (string.IsNullOrEmpty(metadataOrPath)) return false;
-        foreach (var pat in _settings.AutoNavPatterns)
-            if (!string.IsNullOrEmpty(pat) && metadataOrPath.Contains(pat, StringComparison.OrdinalIgnoreCase))
-                return true;
-        return false;
+        lock (_navLock)
+        {
+            if (_selectedIds.Count == 0) return;
+            _selectedIds.RemoveAll(id =>
+            {
+                if (!id.StartsWith("e:", StringComparison.Ordinal) || !uint.TryParse(id.AsSpan(2), out var eid))
+                    return false;
+                foreach (var e in _entities)
+                    if (e.Id == eid) return e.IconComplete; // present → prune iff completed; else keep
+                return false; // absent (out of range) → keep; it may return
+            });
+        }
     }
+
+    /// <summary>Store a copy of <paramref name="ids"/> under <paramref name="hash"/>, evicting the
+    /// oldest remembered zone when the table is full. Call under <see cref="_navLock"/>.</summary>
+    private void RememberZoneSelection(uint hash, List<string> ids)
+    {
+        if (!_zoneSelections.ContainsKey(hash))
+        {
+            if (_zoneOrder.Count >= MaxRememberedZones)
+            {
+                _zoneSelections.Remove(_zoneOrder[0]);
+                _zoneOrder.RemoveAt(0);
+            }
+            _zoneOrder.Add(hash);
+        }
+        _zoneSelections[hash] = new List<string>(ids);
+    }
+
+    /// <summary>Surfacing matcher fed to Poe2Live: a terrain tile surfaces as a landmark when a user
+    /// landmark pattern matches OR a (non-hide) "Tile" display rule with explicit match terms matches.
+    /// Returns the label to show (empty string = use the tile's derived name), or null to not surface.</summary>
+    private string? TileLandmarkMatch(string tilePath)
+    {
+        var tr = _displayRules.ResolveTile(tilePath, requireMatch: true);
+        return tr is { Hide: false } ? (tr.Label ?? "") : null;
+    }
+
+    /// <summary>Distinct terrain-tile paths for the current area (served by /api/tiles for the add-rule
+    /// picker). Empty when not in game. Cached per area inside Poe2Live.</summary>
+    private IReadOnlyList<string> CurrentTilePaths()
+        => _areaInstanceForApi != 0 ? _live.TilePaths(_areaInstanceForApi) : Array.Empty<string>();
+
 
     /// <summary>F6: add the nearest navigation target not already selected into the selection.</summary>
     private void AddNearestPathTarget()
@@ -629,9 +785,9 @@ public sealed class RadarApp : IDisposable
 
         if (id.StartsWith("t:", StringComparison.Ordinal))
         {
-            var path = id[2..];
+            var key = id[2..];
             foreach (var lm in _landmarks)
-                if (lm.Path == path) { grid = lm.Center; return true; }
+                if (lm.Key == key) { grid = lm.Center; return true; }
             return false;
         }
 

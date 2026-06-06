@@ -175,12 +175,13 @@ public static class Poe2
         public const int Rarity = 0x144;
     }
 
-    /// <summary>Chest component. ✓ OpenState validated live (closed/unopened = 1, opened/used = 0 at
-    /// +0x168 — re-confirmed 2026-06-03 against a magic unopened chest). The fork's extra sub-offsets
-    /// did NOT survive validation on our build.</summary>
+    /// <summary>Chest component. ✓ OpenState @ +0x168 — the offset is stable, but the 2026-06-06 patch
+    /// INVERTED its polarity: now 0 = closed/openable, non-zero = opened/used (was 1=closed/0=opened,
+    /// per the 2026-06-03 read). Re-validated live by diffing a rare chest closed-vs-opened (+0x168
+    /// flipped 0→1). The fork's extra sub-offsets did NOT survive validation on our build.</summary>
     public static class ChestComponent
     {
-        public const int OpenState       = 0x168; // ✓ 1 = closed/openable, 0 = opened/used
+        public const int OpenState       = 0x168; // ✓ 0 = closed/openable, non-zero = opened/used (polarity flipped 2026-06-06)
         // ⚠ INVALID on our build (live 2026-06-03, G3_3): 0x20/0x21/0x25 read 184/7/127 — identical
         // across a magic AND a normal chest, sitting inside pointer bytes (component header). The
         // fork's IDA offsets drifted; the real Locked/Large flags need rediscovery (--validate).

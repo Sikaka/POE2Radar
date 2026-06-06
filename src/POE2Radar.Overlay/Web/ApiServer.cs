@@ -46,8 +46,8 @@ public sealed class ApiServer : IDisposable
     private readonly Action<string> _navToggle;
     private readonly Action _navClear;
     private readonly HiddenEntities _hidden;
-    private readonly WatchedEntities _watched;
-    private readonly LandmarkPatterns _landmarks;
+    private readonly DisplayRules _displayRules;
+    private readonly Func<IReadOnlyList<string>> _tiles;
     private volatile bool _running;
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
@@ -59,8 +59,8 @@ public sealed class ApiServer : IDisposable
         Action<string> navToggle,
         Action navClear,
         HiddenEntities hidden,
-        WatchedEntities watched,
-        LandmarkPatterns landmarks,
+        DisplayRules displayRules,
+        Func<IReadOnlyList<string>> tilesProvider,
         int port = 7777)
     {
         _state = state;
@@ -69,8 +69,8 @@ public sealed class ApiServer : IDisposable
         _navToggle = navToggle;
         _navClear = navClear;
         _hidden = hidden;
-        _watched = watched;
-        _landmarks = landmarks;
+        _displayRules = displayRules;
+        _tiles = tilesProvider;
         _listener.Prefixes.Add($"http://localhost:{port}/");
     }
 
@@ -174,7 +174,7 @@ public sealed class ApiServer : IDisposable
                     {
                         id = e.Id, addr = $"0x{e.Address:X}", category = e.Category.ToString(), metadata = e.Metadata,
                         name = EntityNameResolver.Shared.ResolveOrShorten(e.Metadata),
-                        poi = e.Poi, iconComplete = e.IconComplete, reaction = e.Reaction, friendly = e.IsFriendly, rarity = e.Rarity.ToString(),
+                        poi = e.Poi, iconComplete = e.IconComplete, opened = e.Opened, reaction = e.Reaction, friendly = e.IsFriendly, rarity = e.Rarity.ToString(),
                         x = e.Grid.X, y = e.Grid.Y, hpCur = e.HpCur, hpMax = e.HpMax,
                         alive = e.HpMax <= 0 || e.HpCur > 0,
                         dist = (int)Dist(e.Grid, s.Player),
@@ -260,29 +260,6 @@ public sealed class ApiServer : IDisposable
                 break;
             }
 
-            case "/api/landmark-patterns":
-            {
-                if (ctx.Request.HttpMethod == "GET")
-                {
-                    Write(ctx, 200, JsonSerializer.Serialize(new { patterns = _landmarks.All }, Json));
-                }
-                else if (ctx.Request.HttpMethod == "POST")
-                {
-                    if (!IsLoopbackHost(ctx.Request))
-                    {
-                        Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json));
-                        break;
-                    }
-                    ApplyLandmarkPatterns(ReadBody(ctx));
-                    Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, patterns = _landmarks.All }, Json));
-                }
-                else
-                {
-                    Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json));
-                }
-                break;
-            }
-
             case "/api/zone":
             {
                 // Static zone reference for the current area: friendly name, act/level, flags, and
@@ -303,11 +280,17 @@ public sealed class ApiServer : IDisposable
                 break;
             }
 
-            case "/api/watched":
+            case "/api/tiles":
+                // Distinct terrain-tile paths in the current area — the add-rule picker browses these
+                // so a Tile rule can target any tile. Read-only.
+                Write(ctx, 200, JsonSerializer.Serialize(new { tiles = _tiles() }, Json));
+                break;
+
+            case "/api/display-rules":
             {
                 if (ctx.Request.HttpMethod == "GET")
                 {
-                    Write(ctx, 200, JsonSerializer.Serialize(new { rules = _watched.All }, Json));
+                    Write(ctx, 200, JsonSerializer.Serialize(new { rules = _displayRules.All }, Json));
                 }
                 else if (ctx.Request.HttpMethod == "POST")
                 {
@@ -316,8 +299,8 @@ public sealed class ApiServer : IDisposable
                         Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json));
                         break;
                     }
-                    ApplyWatched(ReadBody(ctx));
-                    Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, rules = _watched.All }, Json));
+                    ApplyDisplayRules(ReadBody(ctx));
+                    Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, rules = _displayRules.All }, Json));
                 }
                 else
                 {
@@ -343,7 +326,7 @@ public sealed class ApiServer : IDisposable
         hideJunk = _settings.HideJunk,
         showPath = _settings.ShowPath,
         useCuratedLandmarks = _settings.UseCuratedLandmarks,
-        autoNavPatterns = _settings.AutoNavPatterns,
+        landmarkClusterGap = _settings.LandmarkClusterGap,
         showMonsters = _settings.ShowMonsters,
         showTerrain = _settings.ShowTerrain,
         showPlayerBlip = _settings.ShowPlayerBlip,
@@ -384,6 +367,7 @@ public sealed class ApiServer : IDisposable
                 case "hideJunk" when TryBool(p.Value, out var b): _settings.HideJunk = b; applied.Add(p.Name); break;
                 case "showPath" when TryBool(p.Value, out var b): _settings.ShowPath = b; applied.Add(p.Name); break;
                 case "useCuratedLandmarks" when TryBool(p.Value, out var b): _settings.UseCuratedLandmarks = b; applied.Add(p.Name); break;
+                case "landmarkClusterGap" when TryInt(p.Value, out var n): _settings.LandmarkClusterGap = Math.Clamp(n, 0, 64); applied.Add(p.Name); break;
                 case "scaleMul" when TryFloat(p.Value, out var f): _settings.ScaleMul = f; applied.Add(p.Name); break;
                 case "offX" when TryFloat(p.Value, out var f): _settings.OffX = f; applied.Add(p.Name); break;
                 case "offY" when TryFloat(p.Value, out var f): _settings.OffY = f; applied.Add(p.Name); break;
@@ -411,18 +395,6 @@ public sealed class ApiServer : IDisposable
                     break;
                 case "terrain" when p.Value.ValueKind == JsonValueKind.Object:
                     if (TryParseTerrain(p.Value, out var terrain)) { _settings.Terrain = terrain; applied.Add(p.Name); }
-                    break;
-                // Persistent auto-nav patterns (string list). Replaces the whole list with a sanitized,
-                // deduped, capped copy — assigned as a fresh reference so the tick thread's iteration
-                // never sees a partially-mutated list.
-                case "autoNavPatterns" when p.Value.ValueKind == JsonValueKind.Array:
-                    _settings.AutoNavPatterns = p.Value.EnumerateArray()
-                        .Where(x => x.ValueKind == JsonValueKind.String)
-                        .Select(x => (x.GetString() ?? "").Trim())
-                        .Where(x => x.Length is > 0 and <= 64)
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .Take(32).ToList();
-                    applied.Add(p.Name);
                     break;
                 // Anything else (apiPort, unknown keys) is ignored by design.
             }
@@ -586,51 +558,6 @@ public sealed class ApiServer : IDisposable
         }
     }
 
-    /// <summary>Apply a posted watched-list command. Shapes:
-    /// <list type="bullet">
-    /// <item>{"add":{"pattern","label","color","size"?,"shape"?}} — create/replace a rule</item>
-    /// <item>{"update":{"pattern","label"?,"color"?,"enabled"?,"size"?,"shape"?}} — edit fields</item>
-    /// <item>{"remove":"&lt;pattern&gt;"} — delete a rule</item>
-    /// </list>
-    /// Inputs are sanitized (color → #RRGGBB, shape → a known icon, size clamped). Highlight-only —
-    /// never touches the game.</summary>
-    private void ApplyWatched(string body)
-    {
-        if (string.IsNullOrWhiteSpace(body)) return;
-
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
-        if (root.ValueKind != JsonValueKind.Object) return;
-
-        if (root.TryGetProperty("remove", out var rem) && rem.ValueKind == JsonValueKind.String)
-        {
-            var p = rem.GetString();
-            if (!string.IsNullOrWhiteSpace(p)) _watched.Remove(p);
-        }
-
-        if (root.TryGetProperty("add", out var add) && add.ValueKind == JsonValueKind.Object)
-        {
-            var pattern = Str(add, "pattern");
-            if (!string.IsNullOrWhiteSpace(pattern))
-                _watched.Add(pattern!.Trim(), Str(add, "label") ?? "",
-                    SanitizeColor(Str(add, "color")), SanitizeSize(add, 7f), SanitizeShape(Str(add, "shape")));
-        }
-
-        if (root.TryGetProperty("update", out var upd) && upd.ValueKind == JsonValueKind.Object)
-        {
-            var pattern = Str(upd, "pattern");
-            if (!string.IsNullOrWhiteSpace(pattern))
-            {
-                bool? enabled = upd.TryGetProperty("enabled", out var en) && TryBool(en, out var b) ? b : null;
-                float? size = upd.TryGetProperty("size", out var sz) && TryFloat(sz, out var f) ? Math.Clamp(f, 0.5f, 40f) : null;
-                var color = upd.TryGetProperty("color", out _) ? SanitizeColor(Str(upd, "color")) : null;
-                var shape = upd.TryGetProperty("shape", out _) ? SanitizeShape(Str(upd, "shape")) : null;
-                _watched.Update(pattern!.Trim(), label: Str(upd, "label"), color: color,
-                    enabled: enabled, size: size, shape: shape);
-            }
-        }
-    }
-
     private static string? Str(JsonElement o, string name)
         => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
@@ -643,41 +570,63 @@ public sealed class ApiServer : IDisposable
     private static float SanitizeSize(JsonElement o, float fallback)
         => o.TryGetProperty("size", out var v) && TryFloat(v, out var f) ? Math.Clamp(f, 0.5f, 40f) : fallback;
 
-    /// <summary>Apply a posted landmark-pattern command. Shapes:
-    /// <list type="bullet">
-    /// <item>{"add":{"pattern","label"?}} — surface tiles whose path contains pattern (blank label = derived name)</item>
-    /// <item>{"update":{"pattern","label"?,"enabled"?}}</item>
-    /// <item>{"remove":"&lt;pattern&gt;"}</item>
-    /// </list>
-    /// Affects only which terrain tiles the overlay surfaces as landmarks — never the game.</summary>
-    private void ApplyLandmarkPatterns(string body)
+    /// <summary>Replace the entire ordered display ruleset from a POST <c>{"rules":[...]}</c> — the
+    /// dashboard owns the array and re-posts it on every edit (add / remove / reorder / toggle / field
+    /// change), the same whole-object pattern <c>styles</c> uses. Each rule is sanitized. Also accepts
+    /// <c>{"clear":true}</c>. Render-only — never touches the game.</summary>
+    private void ApplyDisplayRules(string body)
     {
         if (string.IsNullOrWhiteSpace(body)) return;
-
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
         if (root.ValueKind != JsonValueKind.Object) return;
 
-        if (root.TryGetProperty("remove", out var rem) && rem.ValueKind == JsonValueKind.String)
+        if (root.TryGetProperty("clear", out var cl) && TryBool(cl, out var c) && c)
         {
-            var p = rem.GetString();
-            if (!string.IsNullOrWhiteSpace(p)) _landmarks.Remove(p);
+            _displayRules.Replace(Array.Empty<DisplayRule>());
+            return;
         }
-        if (root.TryGetProperty("add", out var add) && add.ValueKind == JsonValueKind.Object)
-        {
-            var pattern = Str(add, "pattern");
-            if (!string.IsNullOrWhiteSpace(pattern)) _landmarks.Add(pattern!.Trim(), (Str(add, "label") ?? "").Trim());
-        }
-        if (root.TryGetProperty("update", out var upd) && upd.ValueKind == JsonValueKind.Object)
-        {
-            var pattern = Str(upd, "pattern");
-            if (!string.IsNullOrWhiteSpace(pattern))
-            {
-                bool? enabled = upd.TryGetProperty("enabled", out var en) && TryBool(en, out var b) ? b : null;
-                var label = upd.TryGetProperty("label", out _) ? (Str(upd, "label") ?? "") : null;
-                _landmarks.Update(pattern!.Trim(), label: label, enabled: enabled);
-            }
-        }
+        if (!root.TryGetProperty("rules", out var arr) || arr.ValueKind != JsonValueKind.Array) return;
+
+        var list = JsonSerializer.Deserialize<List<DisplayRule>>(arr.GetRawText(), Json) ?? new();
+        if (list.Count > 300) list = list.GetRange(0, 300); // sanity cap
+        foreach (var r in list) SanitizeRule(r);
+        _displayRules.Replace(list);
+    }
+
+    // Valid rule categories: the entity categories plus the pseudo-category "Tile" (matches terrain
+    // tiles by path instead of an entity).
+    private static readonly string[] CategoryNames = Enum.GetNames<Poe2Live.EntityCategory>().Append("Tile").ToArray();
+
+    /// <summary>Clamp/validate a posted rule in place: known icon shape, #RRGGBB color, 0..1 opacity,
+    /// size 0.5..40, valid category names, valid condition enums (else null = "any"), trimmed text.</summary>
+    private static void SanitizeRule(DisplayRule r)
+    {
+        r.Name = (r.Name ?? "").Trim();
+        if (r.Name.Length > 60) r.Name = r.Name[..60];
+        r.Categories = (r.Categories ?? new())
+            .Select(c => CategoryNames.FirstOrDefault(n => string.Equals(n, c, StringComparison.OrdinalIgnoreCase)))
+            .Where(c => c != null).Select(c => c!).Distinct().ToList();
+        r.Match = (r.Match ?? new()).Select(m => (m ?? "").Trim()).Where(m => m.Length > 0).Take(32).ToList();
+        r.Rarity    = OneOf(r.Rarity, "Normal", "Magic", "Rare", "Unique");
+        r.Reaction  = OneOf(r.Reaction, "Hostile", "Friendly");
+        r.Life      = OneOf(r.Life, "Alive", "Dead");
+        r.Chest     = OneOf(r.Chest, "Opened", "Unopened");
+        r.Poi       = OneOf(r.Poi, "Yes", "No");
+        r.Encounter = OneOf(r.Encounter, "Active", "Complete");
+        r.Shape = SanitizeShape(r.Shape);
+        r.Color = SanitizeColor(r.Color);
+        r.Opacity = Math.Clamp(r.Opacity, 0f, 1f);
+        r.Size = Math.Clamp(r.Size, 0.5f, 40f);
+        r.Label = string.IsNullOrWhiteSpace(r.Label) ? null : r.Label.Trim();
+        if (r.Label is { Length: > 60 }) r.Label = r.Label[..60];
+    }
+
+    private static string? OneOf(string? v, params string[] allowed)
+    {
+        if (string.IsNullOrWhiteSpace(v)) return null;
+        foreach (var a in allowed) if (string.Equals(v, a, StringComparison.OrdinalIgnoreCase)) return a;
+        return null;
     }
 
     private static bool TryBool(JsonElement e, out bool v)

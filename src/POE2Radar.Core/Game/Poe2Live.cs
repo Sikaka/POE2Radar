@@ -65,7 +65,14 @@ public sealed class Poe2Live
     /// <summary>A static tile-based landmark: a notable terrain feature and its grid centroid.
     /// <paramref name="CuratedName"/> is an optional curated friendly label (null when none matches);
     /// <paramref name="Name"/> is the derived-from-path fallback.</summary>
-    public readonly record struct Landmark(string Name, string Path, System.Numerics.Vector2 Center, int TileCount, string? CuratedName = null);
+    public readonly record struct Landmark(string Name, string Path, System.Numerics.Vector2 Center, int TileCount, string? CuratedName = null)
+    {
+        /// <summary>Stable per-CLUSTER identity for nav selection. A tile path can now yield several
+        /// landmarks (one per spatial cluster — e.g. each stair-up section of a multi-level dungeon),
+        /// so the path alone is ambiguous; qualify it with the integer centroid, which is stable per
+        /// area (tiles are static terrain).</summary>
+        public string Key => $"{Path}@{(int)Center.X},{(int)Center.Y}";
+    }
 
     public sealed record TerrainData(byte[] Walkable, int Width, int Height);
 
@@ -369,9 +376,56 @@ public sealed class Poe2Live
     /// per-area scan cache rebuilds.</summary>
     public Func<string, string?>? CustomLandmarkMatch { get; set; }
 
+    /// <summary>Max gap (in TILES, Chebyshev) between cells still treated as one landmark cluster.
+    /// Larger merges nearby copies of a reusable tile into fewer markers; smaller splits them. Set by
+    /// the Overlay from <c>RadarSettings.LandmarkClusterGap</c>; call <see cref="InvalidateLandmarks"/>
+    /// after changing it so the per-area scan rebuilds. Clamped to a sane range when used.</summary>
+    public int LandmarkClusterGap { get; set; } = 2;
+
     /// <summary>Drop the cached per-area landmark scan so the next <see cref="Landmarks"/> call rebuilds
     /// it (e.g. after the user edits the custom landmark patterns from the dashboard).</summary>
     public void InvalidateLandmarks() => _landmarksKey = -1;
+
+    private List<string>? _tilePaths;
+    private nint _tilePathsKey = -1;
+
+    /// <summary>
+    /// All DISTINCT terrain-tile paths in the area (sorted), scanned once per area and cached. This is
+    /// the full vocabulary of tile names — what the dashboard's add-rule picker browses so a tile rule
+    /// can target any tile, not just the ones already surfaced as landmarks.
+    /// </summary>
+    public IReadOnlyList<string> TilePaths(nint areaInstance)
+    {
+        if (areaInstance == _tilePathsKey && _tilePaths is not null) return _tilePaths;
+        _tilePathsKey = areaInstance;
+        _tilePaths = ScanTilePaths(areaInstance);
+        return _tilePaths;
+    }
+
+    private List<string> ScanTilePaths(nint areaInstance)
+    {
+        var result = new List<string>();
+        var terrain = areaInstance + Poe2.AreaInstance.TerrainMetadata;
+        if (!_reader.TryReadStruct<long>(terrain + Poe2.Terrain.TotalTiles, out var tilesX) || tilesX <= 0) return result;
+        var first = Ptr(terrain + Poe2.Terrain.TileDetailsPtr);
+        if (!_reader.TryReadStruct<nint>(terrain + Poe2.Terrain.TileDetailsPtr + 8, out var last) || first == 0) return result;
+        var count = ((long)last - (long)first) / Poe2.TileStructureSize;
+        if (count is <= 0 or > 1_000_000) return result;
+
+        // Distinct by TgtFilePtr (one read per tile type — dozens, not per tile), collect the paths.
+        var seenPtr = new HashSet<nint>();
+        var paths = new HashSet<string>(StringComparer.Ordinal);
+        for (long i = 0; i < count; i++)
+        {
+            var tgt = Ptr(first + (nint)(i * Poe2.TileStructureSize) + Poe2.TileStructure.TgtFilePtr);
+            if (tgt == 0 || !seenPtr.Add(tgt)) continue;
+            var p = ReadStdWString(tgt + Poe2.TgtFileStruct.TgtPath);
+            if (!string.IsNullOrEmpty(p)) paths.Add(p);
+        }
+        result.AddRange(paths);
+        result.Sort(StringComparer.Ordinal);
+        return result;
+    }
 
     /// <summary>
     /// Static tile-based landmarks for the area (boss arenas, treasure, waypoints, mechanics…).
@@ -398,12 +452,14 @@ public sealed class Poe2Live
         var count = ((long)last - (long)first) / Poe2.TileStructureSize;
         if (count is <= 0 or > 1_000_000) return result;
 
-        // Accumulate sum-of-positions + count per interesting path. Cache path by TgtFilePtr so
-        // we read each distinct tile type's StdWString once (dozens), not once per tile (thousands).
+        // Collect each kept path's tile cells (in tile-index space) so we can CLUSTER them spatially
+        // rather than average every instance into one centroid. A reusable tile (e.g. a "stairs up"
+        // wall piece) recurs in several disjoint spots — multi-level dungeons have multiple stair-up /
+        // stair-down sections connecting layers — and averaging them lands a marker in the dead space
+        // between, pointing at nothing. Clustering yields one landmark per actual spot. Cache path by
+        // TgtFilePtr so we read each distinct tile type's StdWString once (dozens), not per tile.
         var pathCache = new Dictionary<nint, string?>();
-        var sumX = new Dictionary<string, double>();
-        var sumY = new Dictionary<string, double>();
-        var num = new Dictionary<string, int>();
+        var cellsByPath = new Dictionary<string, List<(int tx, int ty)>>();
 
         for (long i = 0; i < count; i++)
         {
@@ -424,20 +480,61 @@ public sealed class Poe2Live
                 pathCache[tgtFile] = path;
             }
             if (path is null) continue;
-
-            var gx = (i % tilesX) * Poe2.Terrain.TileGridCells;
-            var gy = (i / tilesX) * Poe2.Terrain.TileGridCells;
-            sumX[path] = sumX.GetValueOrDefault(path) + gx;
-            sumY[path] = sumY.GetValueOrDefault(path) + gy;
-            num[path] = num.GetValueOrDefault(path) + 1;
+            (cellsByPath.TryGetValue(path, out var cells) ? cells : cellsByPath[path] = new())
+                .Add(((int)(i % tilesX), (int)(i / tilesX)));
         }
 
-        foreach (var (path, n) in num)
-            result.Add(new Landmark(LandmarkName(path), path,
-                new System.Numerics.Vector2((float)(sumX[path] / n), (float)(sumY[path] / n)), n,
-                // Curated label wins; else a non-empty user label; else null (derived name shows).
-                CustomLandmarkData.TryMatch(areaCode, path) ?? NonEmpty(CustomLandmarkMatch?.Invoke(path))));
+        var cell = Poe2.Terrain.TileGridCells;
+        foreach (var (path, cells) in cellsByPath)
+        {
+            var name = LandmarkName(path);
+            // Curated label wins; else a non-empty user label; else null (derived name shows). Same
+            // for every cluster of this path (they're the same feature type in different spots).
+            var curated = CustomLandmarkData.TryMatch(areaCode, path) ?? NonEmpty(CustomLandmarkMatch?.Invoke(path));
+            foreach (var cluster in ClusterTiles(cells, Math.Clamp(LandmarkClusterGap, 0, 64)))
+            {
+                double sx = 0, sy = 0;
+                foreach (var (tx, ty) in cluster) { sx += tx; sy += ty; }
+                var center = new System.Numerics.Vector2(
+                    (float)(sx / cluster.Count * cell), (float)(sy / cluster.Count * cell));
+                result.Add(new Landmark(name, path, center, cluster.Count, curated));
+            }
+        }
         return result;
+    }
+
+    /// <summary>
+    /// Group same-path tile cells into spatially-disjoint clusters: two cells join when within a
+    /// Chebyshev gap of <c>≤ gap</c> tiles (gap=2 bridges a one-tile hole inside a feature while
+    /// keeping well-separated copies apart; larger merges more, 0 = only directly-touching cells).
+    /// Plain BFS over a cell set — O(tiles) for the small kept-path counts, so a tile type that recurs
+    /// across the map yields one cluster per location instead of a single meaningless average.
+    /// </summary>
+    private static List<List<(int tx, int ty)>> ClusterTiles(List<(int tx, int ty)> cells, int gap)
+    {
+        var set = new HashSet<(int, int)>(cells);
+        var visited = new HashSet<(int, int)>();
+        var clusters = new List<List<(int tx, int ty)>>();
+        var queue = new Queue<(int, int)>();
+        foreach (var start in cells)
+        {
+            if (!visited.Add(start)) continue;
+            var cluster = new List<(int tx, int ty)>();
+            queue.Enqueue(start);
+            while (queue.Count > 0)
+            {
+                var (cx, cy) = queue.Dequeue();
+                cluster.Add((cx, cy));
+                for (var dx = -gap; dx <= gap; dx++)
+                    for (var dy = -gap; dy <= gap; dy++)
+                    {
+                        var nb = (cx + dx, cy + dy);
+                        if (set.Contains(nb) && visited.Add(nb)) queue.Enqueue(nb);
+                    }
+            }
+            clusters.Add(cluster);
+        }
+        return clusters;
     }
 
     /// <summary>Null for null/empty, else the string — so an empty user label means "surface but use the
@@ -613,12 +710,16 @@ public sealed class Poe2Live
     private System.Numerics.Vector2? EntityGrid(nint entity)
         => EntityWorld(entity) is { } w ? new System.Numerics.Vector2(w.X / Poe2.WorldToGridRatio, w.Y / Poe2.WorldToGridRatio) : null;
 
-    /// <summary>Chest opened state: Chest component +0x168 is 1 while closed/openable, 0 once opened.</summary>
+    /// <summary>Chest opened state. The 2026-06-06 patch INVERTED this flag: Chest +0x168 is now 0
+    /// while closed/openable and non-zero once opened/used (was the reverse). Validated live by diffing
+    /// one rare chest closed-vs-opened — only +0x168 flipped (0→1; loot/interaction pointers nulled).
+    /// A read failure returns not-opened (i.e. shows the chest): for chests, over-showing is far safer
+    /// than silently hiding a real one — which is exactly the bug this flip caused.</summary>
     private bool ReadChestOpened(nint entity)
     {
         if (!_chestAddr.TryGetValue(entity, out var c)) { c = ResolveComponent(entity, "Chest"); _chestAddr[entity] = c; }
         if (c == 0) return false;
-        return _reader.TryReadStruct<byte>(c + Poe2.ChestComponent.OpenState, out var b) && b == 0;
+        return _reader.TryReadStruct<byte>(c + Poe2.ChestComponent.OpenState, out var b) && b != 0;
     }
 
     /// <summary>WorldToScreen matrix (16 floats, row-major) from Camera@InGameState+0x368. Null if unavailable.</summary>
@@ -639,13 +740,16 @@ public sealed class Poe2Live
         _meta[entity] = meta;
         c = meta switch
         {
+            // NPCs FIRST: friendly NPCs (Alva, vendors…) live under "Metadata/Monsters/NPC/…", so the
+            // "/NPC/" check must precede "/Monsters/" or they'd be miscategorized as combat monsters
+            // (and a Unique-rarity NPC would draw the enemy unique star). "/NPC/" is the NPC marker.
+            _ when meta.Contains("/NPC/", StringComparison.Ordinal)         => EntityCategory.Npc,
             // Real combat monsters only — exclude on-death/aura effect carriers (MonsterMods),
             // player/ally summons, and invisible effect daemons. Those clutter the map and aren't
-            // fight targets. (Hostility via Positioned.Reaction is a future refinement.)
+            // fight targets. (Friendly/hostile is applied at draw time via Positioned.Reaction.)
             _ when meta.Contains("/Monsters/", StringComparison.Ordinal) && IsNonCombat(meta) => EntityCategory.Other,
             _ when meta.Contains("/Monsters/", StringComparison.Ordinal)   => EntityCategory.Monster,
             _ when meta.Contains("/Characters/", StringComparison.Ordinal)  => EntityCategory.Player,
-            _ when meta.Contains("/NPC/", StringComparison.Ordinal)         => EntityCategory.Npc,
             // Real chests only — exclude breakable props (urns/vases/pots/etc.) under /Chests/.
             _ when meta.Contains("/Chests", StringComparison.Ordinal) && IsBreakableProp(meta) => EntityCategory.Other,
             _ when meta.Contains("/Chests", StringComparison.Ordinal)       => EntityCategory.Chest,
