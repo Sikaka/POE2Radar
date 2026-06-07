@@ -62,6 +62,43 @@ public sealed class RadarSettings
     public float OffX { get; set; } = 0f;
     public float OffY { get; set; } = 0f;
 
+    // ── Atlas overlay projection (canvas RelativePos → screen = pos × AtlasScale + offset). Calibrated
+    //    live from the dashboard Atlas tab via the click-a-node → see-the-ring loop. ──
+    // Draw the overlay even when PoE2 isn't the foreground window (e.g. while tweaking the dashboard).
+    // Auto-flask stays foreground-gated regardless (safety). Default off (overlay hides when unfocused).
+    public bool AlwaysShowOverlay { get; set; } = false;
+
+    // Atlas canvas→screen is a homography (perspective; the atlas plane is tilted):
+    //   w = persX·x + persY·y + 1;  sx = (scale·x + shearX·y + offX)/w;  sy = (shearY·x + scaleY·y + offY)/w
+    // Shear/persp default 0 ⇒ reduces to a plain x/y affine. Solved from 4 node↔cursor correspondences.
+    public float AtlasScale { get; set; } = 0.572f;  // h0 (X scale) ≈ UIscale×zoom
+    public float AtlasScaleY { get; set; } = 0.572f; // h4 (Y scale)
+    public float AtlasOffX { get; set; } = 0f;      // h2
+    public float AtlasOffY { get; set; } = 0f;      // h5
+    public float AtlasShearX { get; set; } = 0f;    // h1
+    public float AtlasShearY { get; set; } = 0f;    // h3
+    public float AtlasPersX { get; set; } = 0f;     // h6
+    public float AtlasPersY { get; set; } = 0f;     // h7
+    // The atlas zoom (canvas scale @ +0x130) that was active when the transform was calibrated. At render
+    // the linear part is rescaled by liveZoom/AtlasCalibZoom so the overlay tracks zoom in/out.
+    public float AtlasCalibZoom { get; set; } = 0.85f;
+    // Atlas highlight rules: only nodes whose content tags include one of these are drawn in-game (the
+    // point is to surface content the game hides by default). Set live from the dashboard Atlas tab.
+    // Matched case-insensitively against each node's resolved content tags (e.g. "Breach", "Powerful Map Boss").
+    public List<string> AtlasHighlightTags { get; set; } = new();
+    // Tags with the off-screen ARROW enabled: when a matching map is outside render distance, an edge
+    // arrow points toward it (for hunting high-value maps you can't zoom out to). Independent of tracking.
+    public List<string> AtlasArrowTags { get; set; } = new();
+    // Per-rule ring colour (tag → "#RRGGBB"), so each highlighted map draws in its filter's category
+    // colour in-game (Citadel gold, Boss red, …). Set from the dashboard alongside AtlasHighlightTags.
+    public Dictionary<string, string> AtlasHighlightColors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // Seeded-defaults guard: false until the atlas rules have been initialized once (either by seeding
+    // the Citadel defaults when nodes are first read, or by any dashboard edit). Stops re-seeding.
+    public bool AtlasRulesInitialized { get; set; }
+    // DEBUG: draw EVERY atlas node (overriding the highlight-only rule) — for offset/coverage diagnostics.
+    // Off by default: normally only nodes matching AtlasHighlightTags (or manually selected) are drawn.
+    public bool AtlasDrawAll { get; set; } = false;
+
     // ── Auto-flask thresholds + per-flask cooldowns (milliseconds). ──
     public float LifeThresholdPct { get; set; } = 65f;
     public float ManaThresholdPct { get; set; } = 30f;

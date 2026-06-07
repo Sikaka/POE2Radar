@@ -296,14 +296,55 @@ public static class Poe2
         public const int Zoom         = 0x3A8; // ✓ float (0.5 live)
     }
 
-    /// <summary>UiElement base — ✓ validated live (GH2's offsets drifted: Self 0x30→0x8, Flags 0x1B8→0x180).</summary>
+    /// <summary>UiElement base — ✓ validated live (GH2's offsets drifted: Self 0x30→0x8, Flags 0x1B8→0x180).
+    /// Parent/Position/Size from the 2026-06-07 community offset dump (resources/additional offsets.txt);
+    /// Position + Size confirmed live on the atlas-node class (size = 40×40 icons, positions vary per node).</summary>
     public static class UiElement
     {
         public const int Self           = 0x08;  // ✓ self pointer
-        public const int Children       = 0x10;  // ✓ StdVector of child UiElement pointers
+        public const int Children       = 0x10;  // ✓ StdVector begin (child UiElement ptrs); End @ +0x18
+        public const int ChildrenEnd    = 0x18;  // ✓ StdVector end
+        public const int Parent         = 0xB8;  // (community) parent UiElement; true UI root = *(UiRoot+0xB8)
+        public const int RelativePos    = 0x118; // ✓ StdTuple2D<float> position relative to parent (varies per atlas node)
         public const int Flags          = 0x180; // ✓ uint; IsVisibleLocal = bit 0x0B (toggle-diff: 0x2EF1↔0x26F1)
         public const int FlagVisibleBit = 0x0B;  // ✓ visible bit (set when shown)
+        public const int SizeW          = 0x288; // ✓ float unscaled width  (atlas node = 40)
+        public const int SizeH          = 0x28C; // ✓ float unscaled height (atlas node = 40)
         // Full visibility is hierarchical: an element is shown iff its own bit 0x0B AND every
-        // ancestor's bit are set. Walk Parent up to UiRoot (Parent offset still TBD).
+        // ancestor's bit are set. Walk Parent (+0xB8) up to the root.
+    }
+
+    /// <summary>Atlas map-node UiElement (a subclass with its own vtable; ~1200+ instances live in the
+    /// open Atlas). Fields from the 2026-06-07 community dump; structurally confirmed live: biome
+    /// (+0x32E) spread 0..12, per-node positions (UiElement.RelativePos), 40×40 size, scale (+0x130) =
+    /// the atlas zoom. (+0x300 is a map-TYPE id shared by same-type nodes — NOT unique per node.)
+    ///
+    /// <para><b>PROJECTION (✓ live, pan + zoom):</b> a node's on-screen position is
+    /// <c>screen = (UIscale × zoom) × relPos + offset</c>, where relPos = +0x118 (read live; the game
+    /// rewrites it on PAN so pan is free), zoom = +0x130 (read live; ~0.85 max zoom-out → larger zoomed
+    /// in), UIscale = winH/1600, offset ≈ factor×½icon ≈ (15,13) @ 1080p/zoom-0.85. NOT a perspective
+    /// homography. The overlay calibrates the offset once (F10/F11, scale+translate RANSAC) and rescales
+    /// the linear part by liveZoom/calibZoom each frame. <b>Recovery after a patch:</b> run
+    /// <c>POE2Radar.Research --atlas-probe</c> (Atlas map open) — it re-locates the class + canvas,
+    /// validates every offset, and prints the derived projection. Only the node-class vtable drifts.
+    /// See resources/atlas-research-notes.md "FULLY SOLVED".</para></summary>
+    public static class AtlasNode
+    {
+        public const int MapNodeId   = 0x300; // ✓ u32 — distinct per node
+        public const int Content     = 0x310; // (community) u32 content (0 = none)
+        public const int State       = 0x32C; // (community) u8 state (seen =1 on loaded nodes)
+        public const int Biome       = 0x32E; // ✓ u8 biome index (0..12)
+        public const int Flags       = 0x32F; // (community) u8: bit0 unlocked, bit1 visited
+        public const int Completion  = 0x339; // (community) u8 per-node completion id
+        public const int ContentVec  = 0x350; // (community) StdVector begin (content list); End @ +0x358
+    }
+
+    /// <summary>World hover tracker (community, 2026-06-07): <c>*(UiRoot+0x7D8)+0x630</c>; hovered entity
+    /// at +0x18. Singletons share vtable (image+0x2D707D8). The capture anchor for "what am I pointing at".</summary>
+    public static class HoverTracker
+    {
+        public const int FromUiRoot   = 0x7D8; // *(UiRoot + 0x7D8) → tracker container
+        public const int WorldTracker = 0x630; // + 0x630 → world hover tracker
+        public const int HoveredEntity = 0x18; // + 0x18 → hovered entity/element
     }
 }

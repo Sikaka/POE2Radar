@@ -98,7 +98,14 @@ public sealed class OverlayRenderer : IDisposable
         {
             // Draw nothing unless PoE2 is the foreground window — so the overlay never shows
             // over other apps when you alt-tab. (The cleared frame above hides prior content.)
-            if (ctx.Active && ctx.InGame)
+            if (ctx.Active && ctx.InGame && ctx.AtlasOpen)
+            {
+                // The Atlas screen is open: its overlay takes precedence — draw ONLY the atlas node
+                // highlights, never the world radar/minimap (which would be meaningless over the atlas).
+                DrawAtlas(rt, ctx);
+                _legendRowRects.Clear();
+            }
+            else if (ctx.Active && ctx.InGame)
             {
                 DrawNameplates(rt, ctx);                   // world-space HP bars over hostile mobs
                 if (ctx.Map.IsVisible)
@@ -117,6 +124,97 @@ public sealed class OverlayRenderer : IDisposable
         }
         finally { rt.EndDraw(); }
         _window.Present();
+    }
+
+    /// <summary>
+    /// Atlas overlay: highlight atlas map nodes on the open Atlas screen. Each node's canvas-space
+    /// position (RelativePos) is projected to screen via the calibratable atlas transform
+    /// (screen = pos × AtlasScale + Atlas offset). Selected nodes (from the dashboard) draw a bright
+    /// cyan ring; otherwise content nodes are orange and un-run nodes green (config-free for now). This
+    /// is the calibration surface: click a node in the dashboard, see where its ring lands, adjust.
+    /// </summary>
+    private void DrawAtlas(ID2D1RenderTarget rt, RenderContext ctx)
+    {
+        if (ctx.AtlasNodes is not { Count: > 0 } marks) return;
+        float W = ctx.WindowWidth, H = ctx.WindowHeight;
+        // Homography: w = h6·x + h7·y + 1; screen = (h0·x+h1·y+h2, h3·x+h4·y+h5) / w. (shear/persp 0 ⇒ affine)
+        float h0 = ctx.AtlasScale, h1 = ctx.AtlasShearX, h2 = ctx.AtlasOffX,
+              h3 = ctx.AtlasShearY, h4 = ctx.AtlasScaleY, h5 = ctx.AtlasOffY,
+              h6 = ctx.AtlasPersX, h7 = ctx.AtlasPersY;
+        float ccx = W * 0.5f, ccy = H * 0.5f;
+        foreach (var n in marks)
+        {
+            var w = h6 * n.X + h7 * n.Y + 1f;
+            if (MathF.Abs(w) < 1e-6f) continue;
+            var sx = (h0 * n.X + h1 * n.Y + h2) / w;
+            var sy = (h3 * n.X + h4 * n.Y + h5) / w;
+            var onScreen = sx >= 0 && sx <= W && sy >= 0 && sy <= H;
+            var col = string.IsNullOrEmpty(n.Color) ? new Color4(0.235f, 0.86f, 1f, 1f) : ParseColor(n.Color, 1f);
+
+            // OFF-SCREEN: if this map has the arrow rule, draw an edge arrow pointing toward it; else skip.
+            if (!onScreen)
+            {
+                if (n.Arrow) DrawAtlasArrow(rt, sx, sy, ccx, ccy, W, H, col, n.Label);
+                continue;
+            }
+
+            var c = new NumVec2(sx, sy);
+            if (n.Selected || n.Arrow)
+            {
+                // Tracked / arrowed map on-screen → ring in its rule's category colour.
+                _bStyle!.Color = col;
+                rt.DrawEllipse(new Ellipse(c, 18f, 18f), _bStyle, 3f);
+                rt.DrawEllipse(new Ellipse(c, 9f, 9f), _bStyle, 2f);
+            }
+            else if (n.IconType > 0) // DEBUG (AtlasDrawAll): content-tag element
+            {
+                _bStyle!.Color = new Color4(1f, 0.9f, 0.2f, 0.9f);
+                rt.DrawEllipse(new Ellipse(c, 7f, 7f), _bStyle, 2f);
+            }
+            else if (n.Visited)
+            {
+                _bStyle!.Color = new Color4(1f, 0.2f, 1f, 1f);
+                rt.DrawEllipse(new Ellipse(c, 16f, 16f), _bStyle, 3f);
+                rt.DrawEllipse(new Ellipse(c, 8f, 8f), _bStyle, 2f);
+            }
+            else
+            {
+                _bStyle!.Color = n.HasContent ? new Color4(1f, 0.62f, 0.26f, 0.95f)
+                               : new Color4(0.43f, 0.91f, 0.53f, 0.85f);
+                rt.DrawEllipse(new Ellipse(c, 11f, 11f), _bStyle, 2f);
+            }
+            var label = n.Label ?? (n.IconType > 0 ? n.IconType.ToString() : null);
+            if (label != null)
+                rt.DrawText(label, _tf!, new Rect(sx + 11f, sy - 9f, sx + 220f, sy + 11f), _bText!, DrawTextOptions.Clip);
+        }
+    }
+
+    /// <summary>Draw an edge arrow pointing from screen-centre toward an OFF-SCREEN atlas map (sx,sy), so
+    /// you can pan toward high-value maps you can't zoom out far enough to see. Clamped to a screen-edge
+    /// inset, coloured by the rule, labelled with the map/content.</summary>
+    private void DrawAtlasArrow(ID2D1RenderTarget rt, float sx, float sy, float cx, float cy, float W, float H, Color4 col, string? label)
+    {
+        float dx = sx - cx, dy = sy - cy;
+        float len = MathF.Sqrt(dx * dx + dy * dy); if (len < 1f) return;
+        float ux = dx / len, uy = dy / len;
+        const float margin = 46f;
+        float tX = MathF.Abs(ux) > 1e-4f ? (W * 0.5f - margin) / MathF.Abs(ux) : 1e9f;
+        float tY = MathF.Abs(uy) > 1e-4f ? (H * 0.5f - margin) / MathF.Abs(uy) : 1e9f;
+        float t = MathF.Min(tX, tY);
+        float ex = cx + ux * t, ey = cy + uy * t;     // point on the inset screen edge
+        float px = -uy, py = ux;                       // perpendicular
+        var tip = new NumVec2(ex + ux * 11f, ey + uy * 11f);
+        var bl = new NumVec2(ex - ux * 9f + px * 10f, ey - uy * 9f + py * 10f);
+        var br = new NumVec2(ex - ux * 9f - px * 10f, ey - uy * 9f - py * 10f);
+        _bStyle!.Color = col;
+        rt.DrawLine(tip, bl, _bStyle, 4f);
+        rt.DrawLine(tip, br, _bStyle, 4f);
+        rt.DrawLine(bl, br, _bStyle, 4f);              // close the arrowhead triangle
+        if (label != null)
+        {
+            float lx = ex - ux * 56f, ly = ey - uy * 18f;
+            rt.DrawText(label, _tf!, new Rect(lx - 95f, ly - 8f, lx + 95f, ly + 10f), _bText!, DrawTextOptions.Clip);
+        }
     }
 
     /// <summary>
