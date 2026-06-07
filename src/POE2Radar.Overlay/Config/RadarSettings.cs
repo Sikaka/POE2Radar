@@ -65,7 +65,7 @@ public sealed class RadarSettings
     // ── Auto-flask thresholds + per-flask cooldowns (milliseconds). ──
     public float LifeThresholdPct { get; set; } = 65f;
     public float ManaThresholdPct { get; set; } = 30f;
-    public float EsThresholdPct { get; set; } = 50f;
+    public float EsThresholdPct { get; set; } = 0f;
     public int LifeCooldownMs { get; set; } = 2500;
     public int ManaCooldownMs { get; set; } = 2000;
     public int EsCooldownMs { get; set; } = 1000;
