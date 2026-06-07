@@ -53,13 +53,13 @@ public sealed class RadarApp : IDisposable
     private volatile bool _shutdown;
 
     // ── Auto-flask (opt-in input). Foreground + in-game gated; F8 master kill-switch.
-    //    Flask keys are configurable in RadarSettings (LifeKey/ManaKey). ──
+    //    Flask keys are configurable in RadarSettings (LifeKey/ManaKey/EsKey). ──
     private bool _autoFlask = true;                        // auto-on; toggle with F8
-    private DateTime _lifeFiredAt = DateTime.MinValue, _manaFiredAt = DateTime.MinValue;
+    private DateTime _lifeFiredAt = DateTime.MinValue, _manaFiredAt = DateTime.MinValue, _esFiredAt = DateTime.MinValue;
     private DateTime _nextToggleAt = DateTime.MinValue;
     private DateTime _nextPathKeyAt = DateTime.MinValue;
     private DateTime _nextBrowserAt = DateTime.MinValue;
-    private float _hpPct = 100f, _manaPct = 100f;
+    private float _hpPct = 100f, _manaPct = 100f, _esPct = 100f;
     private string _flaskNote = "";
     private string _areaCode = "", _charName = "";
     private int _charLevel;
@@ -324,7 +324,7 @@ public sealed class RadarApp : IDisposable
         }
 
         _state = new RadarState(inGame, _areaHash, areaLevel, map.IsVisible, map.Zoom, player, _entities, _landmarks,
-            _hpPct, _manaPct, _autoFlask, _flaskNote, _areaCode, _charName, _charLevel);
+            _hpPct, _manaPct, _esPct, _autoFlask, _flaskNote, _areaCode, _charName, _charLevel);
 
         var ctx = new RenderContext(
             InGame: inGame,
@@ -460,7 +460,7 @@ public sealed class RadarApp : IDisposable
             _flaskNote = "paused (vitals unreadable — offsets may have drifted)";
             return;
         }
-        _hpPct = v.HpPct; _manaPct = v.ManaPct;
+        _hpPct = v.HpPct; _manaPct = v.ManaPct; _esPct = v.EsPct;
 
         if (!_autoFlask) { _flaskNote = "OFF (F8)"; return; }
         if (GetForegroundWindow() != _gameHwnd) { _flaskNote = "paused (PoE2 not focused)"; return; }
@@ -476,6 +476,11 @@ public sealed class RadarApp : IDisposable
             now - _manaFiredAt >= TimeSpan.FromMilliseconds(_settings.ManaCooldownMs))
         {
             SendInputNative.Tap((ushort)_settings.ManaKey); _manaFiredAt = now; _flaskNote = $"mana@{v.ManaPct:F0}%";
+        }
+        if (v.EsUnreserved > 0 && v.EsPct < _settings.EsThresholdPct &&
+            now - _esFiredAt >= TimeSpan.FromMilliseconds(_settings.EsCooldownMs))
+        {
+            SendInputNative.Tap((ushort)_settings.EsKey); _esFiredAt = now; _flaskNote = $"es@{v.EsPct:F0}%";
         }
     }
 

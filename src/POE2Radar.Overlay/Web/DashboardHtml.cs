@@ -255,6 +255,12 @@ internal static class DashboardHtml
   .hpshared .numin{width:62px}
   .delbtn{font-family:inherit; font-size:11px; color:var(--blood-bright); background:transparent; border:1px solid var(--line); border-radius:2px; padding:4px 9px; cursor:pointer; flex:none}
   .trow-ctl{display:flex; align-items:center; gap:9px; flex:none}
+  /* auto-flask 3-resource table: Resource | Threshold % | Flask key | Cooldown ms */
+  .flask-grid{display:grid; grid-template-columns:90px 1fr 1fr 1fr; gap:7px 10px; align-items:center; padding:4px 0 6px}
+  .flask-grid .fgh{font-size:9px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); text-align:center}
+  .flask-grid .fgh:first-child{text-align:left}
+  .flask-grid .fgr{font-size:12px; color:var(--ink)}
+  .flask-grid .numin{width:100%; min-width:0; padding:5px 8px}
 
   /* ── SVG icon picker (replaces the plain shape <select>): a button showing the chosen icon's
        silhouette + name, opening a shared popup grid of icon previews. ── */
@@ -484,18 +490,25 @@ internal static class DashboardHtml
           </div>
           <div class="card">
             <h3>Auto-Flask</h3>
-            <div class="row"><div class="rl">Life threshold %<small>tap life flask below this Life %</small></div>
-              <input class="numin" type="number" step="1" min="0" max="100" data-set="lifeThresholdPct"></div>
-            <div class="row"><div class="rl">Mana threshold %<small>tap mana flask below this Mana %</small></div>
-              <input class="numin" type="number" step="1" min="0" max="100" data-set="manaThresholdPct"></div>
-            <div class="row"><div class="rl">Life flask key</div>
-              <input class="numin keyin" type="text" maxlength="1" data-set="lifeKey"></div>
-            <div class="row"><div class="rl">Mana flask key</div>
-              <input class="numin keyin" type="text" maxlength="1" data-set="manaKey"></div>
-            <div class="row"><div class="rl">Life cooldown<small>min ms between life taps</small></div>
-              <input class="numin" type="number" step="100" min="0" data-set="lifeCooldownMs"></div>
-            <div class="row"><div class="rl">Mana cooldown<small>min ms between mana taps</small></div>
-              <input class="numin" type="number" step="100" min="0" data-set="manaCooldownMs"></div>
+            <div class="flask-grid">
+              <div class="fgh"></div>
+              <div class="fgh">Threshold %</div>
+              <div class="fgh">Flask key</div>
+              <div class="fgh">Cooldown ms</div>
+              <div class="fgr">Life</div>
+              <input class="numin" type="number" step="1" min="0" max="100" data-set="lifeThresholdPct">
+              <input class="numin keyin" type="text" maxlength="1" data-set="lifeKey">
+              <input class="numin" type="number" step="100" min="0" data-set="lifeCooldownMs">
+              <div class="fgr">Mana</div>
+              <input class="numin" type="number" step="1" min="0" max="100" data-set="manaThresholdPct">
+              <input class="numin keyin" type="text" maxlength="1" data-set="manaKey">
+              <input class="numin" type="number" step="100" min="0" data-set="manaCooldownMs">
+              <div class="fgr">Energy Shield</div>
+              <input class="numin" type="number" step="1" min="0" max="100" data-set="esThresholdPct">
+              <input class="numin keyin" type="text" maxlength="1" data-set="esKey">
+              <input class="numin" type="number" step="100" min="0" data-set="esCooldownMs">
+            </div>
+            <div class="row"><div class="rl hint-row"><b>Threshold %</b> &mdash; flask fires when the resource drops below this value; clear (or set to 0) to disable that resource. <b>Flask key</b> &mdash; the key pressed when triggered (1&ndash;9 or a letter). <b>Cooldown ms</b> &mdash; minimum time between repeats for that resource. Energy Shield only triggers when ES is present.</div></div>
             <div class="row"><div class="rl hint-row">F8 toggles auto-flask in-game. Status: <span id="flaskState">&mdash;</span></div></div>
           </div>
         </div>
