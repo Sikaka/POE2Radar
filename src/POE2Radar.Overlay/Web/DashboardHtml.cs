@@ -125,6 +125,26 @@ internal static class DashboardHtml
 
   .view{overflow:auto; padding:22px 26px; min-height:0}
   .view[hidden]{display:none}
+  /* ── atlas tab ── */
+  .arow{display:grid; grid-template-columns:minmax(200px,2fr) minmax(120px,1.4fr) 120px; gap:10px; align-items:center;
+        padding:5px 10px; border-bottom:1px solid var(--line); font-size:13px}
+  .arow.ahead{font-weight:600; color:var(--ink-dim); border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--panel)}
+  .arow.val{background:rgba(255,168,38,.07)}
+  .arow .acode{font-family:ui-monospace,Consolas,monospace; color:var(--ink)}
+  .arow.val .acode{color:var(--gold-bright)}
+  .arow .aname{color:var(--ink-dim)}
+  .arow .aid{display:inline-block; min-width:22px; color:var(--ink-dim); font-family:ui-monospace,Consolas,monospace}
+  .rin{color:#6ee787; font-weight:600} .rno{color:var(--ink-dim); opacity:.5}
+  .arow.nrow{grid-template-columns:60px minmax(90px,1fr) minmax(200px,2fr) 130px; cursor:pointer}
+  .arow.nrow:hover{background:rgba(255,255,255,.04)}
+  .arow.nrow.sel{background:rgba(60,220,255,.16); outline:1px solid var(--edge,#3cdcff)}
+  .amono{font-family:ui-monospace,Consolas,monospace; color:var(--ink-dim); font-size:12px}
+  .ntag{font-size:10px; font-weight:600; padding:0 6px; border-radius:8px; border:1px solid var(--line); margin-right:3px}
+  .ntag.tc{color:#ff9f43;border-color:#a35a00} .ntag.tv{color:var(--ink-dim)} .ntag.tu{color:#6ee787;border-color:#2f6b3f}
+  .ntag.tk{color:#73a6ff;border-color:#2a4a80} .ntag.ts{color:#c98bff;border-color:#5a3a80}
+  .akind{font-size:11px; font-weight:600; padding:1px 8px; border-radius:10px; border:1px solid var(--line); color:var(--ink-dim)}
+  .akind.k-boss{color:#ff7300; border-color:#ff7300} .akind.k-unique{color:#ff9f43; border-color:#a35a00}
+  .akind.k-tower{color:#73a6ff; border-color:#2a4a80} .akind.k-merchant{color:#c98bff; border-color:#5a3a80}
 
   /* ── controls ── */
   .controls{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:16px}
@@ -244,7 +264,8 @@ internal static class DashboardHtml
   .drrow.hideon{opacity:.72}
   .drrow.hideon .iconpick,.drrow.hideon .dr-color,.drrow.hideon .dr-op,.drrow.hideon .dr-size,.drrow.hideon .dr-label,.drrow.hideon .opv{opacity:.4; pointer-events:none}
   /* consolidated HP-bar card: per-rarity grid + shared geometry footer */
-  .hpgrid{display:grid; grid-template-columns:64px 1fr 30px 1fr; gap:9px 11px; align-items:center; padding:4px 0 2px}
+  .hpgrid{display:grid; grid-template-columns:30px 64px 1fr 30px 1fr; gap:9px 11px; align-items:center; padding:4px 0 2px}
+  .hpgrid input[type=checkbox]{margin:0; justify-self:center}
   .hpgrid .hph{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); text-align:right}
   .hpgrid .hph:first-child{text-align:left}
   .hpgrid .hpr{font-size:12px; color:var(--ink)}
@@ -324,6 +345,10 @@ internal static class DashboardHtml
 </style>
 </head>
 <body>
+<a id="updateBanner" href="#" target="_blank" rel="noopener" hidden
+   style="display:none;align-items:center;gap:10px;padding:9px 16px;margin:0;background:#e0b341;color:#1a1400;font-weight:600;text-decoration:none">
+  <span>&#x2B06; Update available</span><span id="updateMsg" style="font-weight:400"></span><span style="margin-left:auto;text-decoration:underline">Download &rarr;</span>
+</a>
 <div class="shell">
   <header>
     <div class="mark">
@@ -367,6 +392,7 @@ internal static class DashboardHtml
       <div class="tabs">
         <button class="tab on" data-tab="filters">Rules</button>
         <button class="tab" data-tab="landmarks">Landmarks</button>
+        <button class="tab" data-tab="atlas">Atlas</button>
         <button class="tab" data-tab="settings">Settings</button>
       </div>
 
@@ -420,6 +446,41 @@ internal static class DashboardHtml
         <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsgL">&#10003; saved to config</span></div>
       </section>
 
+      <section class="view" data-view="atlas" hidden>
+        <div class="panel-grid">
+          <div class="card" style="grid-column:1/-1">
+            <h3>Atlas highlights <span class="tag">&middot; only highlighted maps draw in-game</span></h3>
+            <div class="row"><div class="rl hint-row">Each atlas tile's map + <b>rolled content</b> (Powerful Map Boss, Breach, Delirium, hidden content&hellip;) read from memory. <b>Check filters below to ring those maps in-game</b> &mdash; only highlighted maps are drawn, so you can spot content the game hides by default. Open the Atlas in-game, then Refresh.</div></div>
+            <div class="controls" style="margin:6px 0 12px">
+              <button class="addbtn" id="atlasRefresh" style="width:auto;margin:0;padding:9px 16px">&#8635; Refresh</button>
+              <span style="flex:1"></span>
+              <span class="tag" id="atlasStatus">&mdash;</span>
+            </div>
+            <div class="row" style="margin:0 0 10px;flex-direction:column;align-items:stretch;gap:6px">
+              <div class="controls" style="gap:8px;align-items:center">
+                <span class="hint-row" style="flex:1"><b id="atlasHlCount">0 active</b> &mdash; click a row to <b>Track</b> (ring it in-game); click the <b style="color:#e0b341">&#10148;</b> to <b>Arrow</b> (point to it from the screen edge when off-screen). Track without Arrow = highlight only, no arrow.</span>
+                <input type="search" id="atlasHlFilter" placeholder="search filters&hellip;" style="width:200px">
+                <button class="chip" id="atlasHlSelOnly">Selected</button>
+                <button class="chip" id="atlasHlClear">Clear</button>
+              </div>
+              <div id="atlasHlTable" style="max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:6px">
+                <span class="hint-row" style="padding:8px;display:block">Open the Atlas in-game + Refresh to list filters.</span>
+              </div>
+            </div>
+            <details style="margin-top:10px">
+              <summary class="hint-row" style="cursor:pointer">Projection calibration (advanced &mdash; normally set in-game with F10&times;6-8 on tiles, then F11)</summary>
+              <div class="controls" style="margin:8px 0;gap:14px;align-items:center">
+                <label class="rl" style="font-size:12px">scaleX <input class="numin" type="number" step="0.01" min="0.01" max="8" data-set="atlasScale" style="width:70px"></label>
+                <label class="rl" style="font-size:12px">scaleY <input class="numin" type="number" step="0.01" min="0.01" max="8" data-set="atlasScaleY" style="width:70px"></label>
+                <label class="rl" style="font-size:12px">offX <input class="numin" type="number" step="2" data-set="atlasOffX" style="width:70px"></label>
+                <label class="rl" style="font-size:12px">offY <input class="numin" type="number" step="2" data-set="atlasOffY" style="width:70px"></label>
+                <span class="hint-row" style="flex:1">Nudge until rings sit on the nodes in-game.</span>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
       <section class="view" data-view="settings" hidden>
         <div class="panel-grid">
           <div class="card">
@@ -428,6 +489,8 @@ internal static class DashboardHtml
               <label class="sw"><input type="checkbox" data-set="showTerrain"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Show player blip<small>blue dot marking your own position</small></div>
               <label class="sw"><input type="checkbox" data-set="showPlayerBlip"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Always show overlay<small>draw even when PoE2 isn&rsquo;t focused (e.g. while tweaking this dashboard); auto-flask stays focus-gated</small></div>
+              <label class="sw"><input type="checkbox" data-set="alwaysShowOverlay"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Hide junk entities<small>suppress cosmetic / FX / daemon dots</small></div>
               <label class="sw"><input type="checkbox" data-set="hideJunk"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl">Navigation paths<small>draw A&#42; routes to selected landmarks</small></div>
@@ -439,21 +502,25 @@ internal static class DashboardHtml
           </div>
           <div class="card">
             <h3>Monster HP Bars <span class="tag">&middot; by rarity</span></h3>
-            <div class="row"><div class="rl hint-row">Show/hide an HP bar per rule via the <b>HP bar</b> checkbox in the <b>Rules</b> tab. Below sets the bar <i>geometry</i> per rarity.</div></div>
+            <div class="row"><div class="rl hint-row">Toggle the bar on/off per rarity with the <b>On</b> checkbox &mdash; uncheck all to disable HP bars entirely, or leave only the rarities you want. The rest sets the bar <i>geometry</i> per rarity.</div></div>
             <div class="hpgrid">
-              <span class="hph">Rarity</span><span class="hph">Width</span><span class="hph">Border</span><span class="hph">Thick</span>
+              <span class="hph">On</span><span class="hph">Rarity</span><span class="hph">Width</span><span class="hph">Border</span><span class="hph">Thick</span>
+              <input type="checkbox" data-set="hpBarNormal">
               <span class="hpr">Normal</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthNormal">
               <input type="color" class="i-color" data-hpcolor="borderColorNormal">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderNormal">
+              <input type="checkbox" data-set="hpBarMagic">
               <span class="hpr" style="color:var(--magic)">Magic</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthMagic">
               <input type="color" class="i-color" data-hpcolor="borderColorMagic">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderMagic">
+              <input type="checkbox" data-set="hpBarRare">
               <span class="hpr" style="color:var(--rare)">Rare</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthRare">
               <input type="color" class="i-color" data-hpcolor="borderColorRare">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderRare">
+              <input type="checkbox" data-set="hpBarUnique">
               <span class="hpr" style="color:var(--unique)">Unique</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthUnique">
               <input type="color" class="i-color" data-hpcolor="borderColorUnique">
@@ -524,6 +591,7 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 let state=null, zone=null;
 let activeTab='filters';
+let atlasData=null, atlasView='region', atlasSel=new Set(), atlasHl=null, atlasArrow=null, atlasHlSelOnly=false;
 
 /* ── tabs ── */
 $$('.tab').forEach(t=>t.onclick=()=>{
@@ -533,6 +601,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   if(activeTab==='settings') loadSettings();
   if(activeTab==='filters') loadFilters();
   if(activeTab==='landmarks') loadLandmarks();
+  if(activeTab==='atlas'){ if(!atlasData) loadAtlas(); else renderAtlas(); }
 });
 
 /* ── polling (left rail vitals/zone/census) ── */
@@ -774,7 +843,6 @@ function drSummary(r){
 function drRow(r,i){
   const open=!!r._open, cats=r.categories||[];
   const badges=(r.hide?'<span class="drbadge hide">hide</span>':'')
-    +(r.hpBar?'<span class="drbadge">HP</span>':'')
     +(r.navigable?'<span class="drbadge">path</span>':'');
   const body=open?`<div class="drbody">
       <div class="top"><input class="mname dr-name" value="${esc(r.name)}" placeholder="rule name"></div>
@@ -789,7 +857,6 @@ function drRow(r,i){
         <input type="range" class="op dr-op" min="0" max="100" value="${pct(r.opacity)}"><span class="opv">${pct(r.opacity)}%</span>
         <input type="number" class="numin sz dr-size" step="0.1" min="0.5" value="${r.size}">
         <input class="mname dr-label" style="flex:1;min-width:70px" value="${esc(r.label||'')}" placeholder="label (optional)">
-        <label class="drflag" title="show a world-space HP bar (monsters)"><input type="checkbox" class="dr-hp"${r.hpBar?' checked':''}> HP bar</label>
         <label class="drflag" title="qualify as an auto-path navigation target"><input type="checkbox" class="dr-nav"${r.navigable?' checked':''}> Auto-path</label>
       </div>
     </div>`:'';
@@ -831,7 +898,6 @@ function renderDrules(){
     const op=row.querySelector('.dr-op'),opv=row.querySelector('.opv'); op.oninput=()=>opv.textContent=op.value+'%'; op.onchange=()=>{ r.opacity=(+op.value)/100; save(); };
     row.querySelector('.dr-size').onchange=e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)){ r.size=v; save(); } };
     row.querySelector('.dr-label').onchange=e=>{ r.label=e.target.value; save(); };
-    row.querySelector('.dr-hp').onchange=e=>{ r.hpBar=e.target.checked; save(); };
     row.querySelector('.dr-nav').onchange=e=>{ r.navigable=e.target.checked; save(); };
   });
 }
@@ -978,6 +1044,136 @@ $('#lmImport')?.addEventListener('click',()=>{
   inp.click();
 });
 
+/* ── atlas tab (read-only inspection of the map-data we can read) ── */
+async function loadAtlas(){
+  $('#atlasStatus').textContent='reading…';
+  try{ atlasData=await getJSON('/api/atlas'); }catch(e){ atlasData={located:false,note:'request failed'}; }
+  renderAtlas();
+}
+function renderAtlas(){
+  const d=atlasData; if(!d){ return; }
+  const st=$('#atlasStatus'); const nd=d.nodes;
+  if(!(nd&&nd.total)) st.textContent = d.note ? 'scanning…' : 'atlas closed — open it in-game + Refresh';
+  else st.textContent = nd.total+' nodes · '+nd.hasContent+' with content · '
+        +(d.allTags?.length||0)+' content / '+(d.allMaps?.length||0)+' map filters';
+  // Seed active rules from the overlay (once): tracked + arrow sets. Then render the filter table.
+  if(atlasHl===null){ atlasHl=new Set((d.highlightTags||[]).map(t=>t.toLowerCase())); atlasArrow=new Set((d.arrowTags||[]).map(t=>t.toLowerCase())); }
+  renderAtlasHighlight(d);
+}
+// Biome index → friendly-ish label (best-effort; index is the ground truth).
+const BIOMES=['Grass','Sand','Swamp','Forest','Snow','Stone','Volcanic','Coast','Cave','Vaal','Water','Desert','Special'];
+const biomeName=i=>(i>=0&&i<BIOMES.length)?BIOMES[i]:('biome '+i);
+
+// Highlight-rule chips: one per distinct content tag on the atlas. Click to toggle → ONLY matching maps
+// are drawn in-game. Active set is pushed to the overlay (persisted there).
+// Classify a filter row into a category for the table (and grouping/colour).
+function catContent(t){ const s=t.toLowerCase(); if(/not shown|\[dnt\]/.test(s))return'Hidden'; if(/boss/.test(s))return'Boss'; if(/influence/.test(s))return'Influence'; return'Mechanic'; }
+function catMap(t){ const s=t.toLowerCase(); if(/citadel/.test(s))return'Citadel'; if(/tower/.test(s))return'Tower'; if(/temple/.test(s))return'Temple'; if(/vaal/.test(s))return'Vaal'; return'Map'; }
+// Per-category colour (badge tint).
+const CATCOL={Boss:'#e0533a',Mechanic:'#3ca0ff',Influence:'#a06cff',Hidden:'#ff5db1',Citadel:'#e0b341',Tower:'#2fb6a8',Temple:'#d98a2b',Vaal:'#c0395a',Map:'#8a93a0'};
+function catBadge(cat){ const c=CATCOL[cat]||'#8a93a0'; return '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;background:'+c+'26;color:'+c+';border:1px solid '+c+'66">'+esc(cat)+'</span>'; }
+// Build the unified filter list (content + map) with {title,count,cat,group}.
+function atlasFilterRows(d){
+  const rows=[];
+  (d.allTags||[]).forEach(t=>rows.push({title:t.tag,count:t.count,group:'Content',cat:catContent(t.tag)}));
+  (d.allMaps||[]).forEach(t=>rows.push({title:t.tag,count:t.count,group:'Map',cat:catMap(t.tag)}));
+  return rows;
+}
+let atlasHlSort={key:'count',dir:-1};
+function renderAtlasHighlight(d){
+  const box=$('#atlasHlTable'); if(!box) return;
+  let rows=atlasFilterRows(d);
+  if(rows.length===0){ box.innerHTML='<span class="hint-row" style="padding:8px;display:block">No filters yet (open the Atlas + Refresh).</span>'; updateHlCount(); return; }
+  const flt=($('#atlasHlFilter')?.value||'').trim().toLowerCase();
+  if(flt) rows=rows.filter(r=>r.title.toLowerCase().includes(flt)||r.cat.toLowerCase().includes(flt)||r.group.toLowerCase().includes(flt));
+  if(atlasHlSelOnly) rows=rows.filter(r=>atlasHl.has(r.title.toLowerCase())||atlasArrow.has(r.title.toLowerCase()));
+  const k=atlasHlSort.key, dir=atlasHlSort.dir;
+  rows.sort((a,b)=>{ let v= k==='count' ? a.count-b.count : (''+a[k]).localeCompare(''+b[k]); return v*dir || a.title.localeCompare(b.title); });
+  const sa=key=> atlasHlSort.key===key ? (atlasHlSort.dir<0?' ▼':' ▲') : '';
+  const cell='display:grid;grid-template-columns:30px 34px 1fr 50px 90px;gap:8px;align-items:center;padding:5px 9px';
+  let html='<div style="'+cell+';position:sticky;top:0;background:var(--panel,#1a1a1a);border-bottom:1px solid var(--line);font-weight:600;font-size:11px;text-transform:uppercase;opacity:.75">'
+    +'<span title="Track: ring the map in-game">&#9745;</span>'
+    +'<span title="Arrow: edge arrow toward it when off-screen">&#10148;</span>'
+    +'<span data-sort="title" style="cursor:pointer">Title'+sa('title')+'</span>'
+    +'<span data-sort="count" style="cursor:pointer;text-align:right">Count'+sa('count')+'</span>'
+    +'<span data-sort="cat" style="cursor:pointer">Category'+sa('cat')+'</span></div>';
+  html+=rows.map(r=>{
+    const key=r.title.toLowerCase(); const trk=atlasHl.has(key), arw=atlasArrow.has(key);
+    return '<div class="hlrow" data-tag="'+esc(r.title)+'" style="'+cell+';cursor:pointer;border-bottom:1px solid var(--line)'+((trk||arw)?';background:rgba(60,160,255,.14)':'')+'">'
+      +'<span style="font-size:15px">'+(trk?'☑':'☐')+'</span>'
+      +'<span class="hlarw" data-tag="'+esc(r.title)+'" title="toggle off-screen arrow" style="font-size:15px;cursor:pointer;color:'+(arw?'#e0b341':'#4a525c')+'">➤</span>'
+      +'<span title="'+esc(r.title)+'">'+esc(r.title)+'</span>'
+      +'<span class="amono" style="text-align:right">'+r.count+'</span>'
+      +'<span>'+catBadge(r.cat)+'</span></div>';
+  }).join('');
+  box.innerHTML=html;
+  $$('#atlasHlTable [data-sort]').forEach(h=>h.onclick=()=>{ const key=h.dataset.sort; if(atlasHlSort.key===key) atlasHlSort.dir*=-1; else atlasHlSort={key,dir:key==='count'?-1:1}; renderAtlasHighlight(d); });
+  $$('#atlasHlTable .hlarw[data-tag]').forEach(a=>a.onclick=e=>{
+    e.stopPropagation(); const key=a.dataset.tag.toLowerCase();
+    if(atlasArrow.has(key)) atlasArrow.delete(key); else atlasArrow.add(key);
+    renderAtlasHighlight(d); postAtlasHighlight();
+  });
+  $$('#atlasHlTable .hlrow[data-tag]').forEach(row=>row.onclick=()=>{
+    const key=row.dataset.tag.toLowerCase();
+    if(atlasHl.has(key)) atlasHl.delete(key); else atlasHl.add(key);
+    renderAtlasHighlight(d); postAtlasHighlight();
+  });
+  updateHlCount();
+}
+function updateHlCount(){ const el=$('#atlasHlCount'); if(el) el.textContent=(atlasHl?atlasHl.size:0)+' tracked · '+(atlasArrow?atlasArrow.size:0)+' arrow'; }
+// Push the active highlight tags (original-case, from allTags) to the overlay.
+async function postAtlasHighlight(){
+  // Build {tag,color,track,arrow} rules: colour = the row's category colour, so in-game rings match the table.
+  const rows=atlasData?atlasFilterRows(atlasData):[];
+  const rules=rows.filter(r=>{const k=r.title.toLowerCase(); return atlasHl.has(k)||atlasArrow.has(k);})
+    .map(r=>{const k=r.title.toLowerCase(); return {tag:r.title, color:(CATCOL[r.cat]||'#3ca0ff'), track:atlasHl.has(k), arrow:atlasArrow.has(k)};});
+  try{ await fetch('/api/atlas-highlight',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rules})}); }catch(e){}
+}
+$('#atlasHlClear')?.addEventListener('click',()=>{ atlasHl.clear(); atlasArrow.clear(); if(atlasData) renderAtlasHighlight(atlasData); postAtlasHighlight(); });
+$('#atlasHlFilter')?.addEventListener('input',()=>{ if(atlasData) renderAtlasHighlight(atlasData); });
+$('#atlasHlSelOnly')?.addEventListener('click',e=>{ atlasHlSelOnly=!atlasHlSelOnly; e.target.classList.toggle('on',atlasHlSelOnly); if(atlasData) renderAtlasHighlight(atlasData); });
+
+// Live-nodes grid: each row is a real atlas node. Click a row to SELECT it → the overlay highlights
+// it in-game (projection calibration loop). Selection is the set of element addresses.
+function renderAtlasNodes(d, f){
+  let list=d.nodeList||[];
+  if(f) list=list.filter(n=> (''+n.id).includes(f) || biomeName(n.biome).toLowerCase().includes(f)
+      || (n.map||'').toLowerCase().includes(f) || (n.hasContent&&'content'.includes(f))
+      || (!n.visited&&'unvisited'.includes(f)) || ('biome '+n.biome).includes(f)
+      || (n.tags||[]).some(t=>t.toLowerCase().includes(f)));   // match on map name + content names
+  if(list.length===0){ $('#atlasList').innerHTML='<div class="hint-row">No live nodes (open the Atlas in-game, then Refresh).</div>'; return; }
+  // Content nodes first (the interesting ones), then by tag count.
+  list=list.slice().sort((a,b)=>((b.tags||[]).length)-((a.tags||[]).length));
+  const head='<div class="arow ahead nrow"><span>Map</span><span>Content</span><span>Biome</span><span>Pos</span></div>';
+  const body=list.slice(0,1200).map(n=>{
+    const sel=atlasSel.has(n.el)?' sel':'';
+    const hot=((n.map&&atlasHl.has(n.map.toLowerCase()))||(n.tags||[]).some(t=>atlasHl.has(t.toLowerCase())));
+    const val=(n.tags&&n.tags.length)?' val':'';
+    const content=(n.tags||[]).map(t=>'<span class="ntag tc">'+esc(t)+'</span>').join(' ')||'<span class="hint-row">—</span>';
+    return '<div class="arow nrow'+val+sel+(hot?' sel':'')+'" data-el="'+esc(n.el)+'">'
+      +'<span title="'+esc(n.map||'')+'">'+esc(n.map||'—')+(n.visited?' <span class="ntag tv">✓</span>':'')+'</span>'
+      +'<span>'+content+'</span><span>'+esc(biomeName(n.biome))+'</span>'
+      +'<span class="amono">('+n.x+','+n.y+')</span></div>';
+  }).join('');
+  $('#atlasList').innerHTML=head+body
+    +'<div class="hint-row" style="margin-top:10px"><b>Click a node row to highlight it in-game</b> (drives the overlay’s atlas highlight — use it to confirm positions / calibrate). Click again to deselect. Showing '+Math.min(list.length,1200)+' of '+list.length+' nodes.</div>';
+  $$('#atlasList .nrow[data-el]').forEach(row=>row.onclick=()=>{
+    const el=row.dataset.el;
+    if(atlasSel.has(el)) atlasSel.delete(el); else atlasSel.add(el);
+    row.classList.toggle('sel',atlasSel.has(el));
+    postAtlasSel();
+  });
+}
+async function postAtlasSel(){ try{ await fetch('/api/atlas-select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({els:[...atlasSel]})}); }catch(e){} }
+
+$('#atlasRefresh')?.addEventListener('click',loadAtlas);
+$('#atlasSearch')?.addEventListener('input',()=>{ if(atlasData) renderAtlas(); });
+$$('#atlasViewCatalog,#atlasViewRegion,#atlasViewNodes').forEach(b=>b?.addEventListener('click',()=>{
+  atlasView=b.dataset.view;
+  $$('#atlasViewCatalog,#atlasViewRegion,#atlasViewNodes').forEach(x=>x.classList.toggle('on',x===b));
+  renderAtlas();
+}));
+
 /* ── left rail ── */
 function renderState(){
   const s=state; if(!s) return;
@@ -1006,9 +1202,22 @@ function renderState(){
   } else { zn.hidden=true; }
 }
 
+// Update banner: show a download link if a newer version exists on GitHub (best-effort).
+async function checkVersion(){
+  try{
+    const v=await getJSON('/api/version');
+    if(v && v.updateAvailable){
+      const b=$('#updateBanner'); if(!b) return;
+      const m=$('#updateMsg'); if(m) m.textContent=' — '+(v.latest||'')+' (you have v'+(v.current||'?')+')';
+      b.href=v.url||'#'; b.hidden=false; b.style.display='flex';
+    }
+  }catch(e){}
+}
+
 wireSettings(); wireHpBars(); wireTerrain();
 loadIcons().then(()=>{ loadSettings(); loadFilters(); }); // Rules is the default tab
 tick(); setInterval(tick, 1000);
+checkVersion();
 </script>
 </body>
 </html>

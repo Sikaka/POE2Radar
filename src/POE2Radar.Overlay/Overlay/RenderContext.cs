@@ -21,6 +21,10 @@ public readonly record struct LegendEntry(NavTarget Target, int ColorSlot, bool 
 /// its draw/legend color and the smoothed grid-cell waypoints. Empty <see cref="Points"/> = no path.</summary>
 public readonly record struct SelectedPath(int ColorSlot, IReadOnlyList<(int x, int y)> Points);
 
+/// <summary>One atlas node to highlight. <see cref="X"/>/<see cref="Y"/> are the node's canvas-space
+/// RelativePos; the renderer projects them to screen via the atlas calibration (scale + offset).</summary>
+public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false);
+
 /// <summary>What the PoE2 renderer needs each frame. Built fresh by <see cref="RadarApp"/>.</summary>
 public sealed record RenderContext(
     bool InGame,
@@ -80,4 +84,16 @@ public sealed record RenderContext(
     Func<Poe2Live.EntityDot, Web.DisplayRule?>? Resolve = null,
     // Tile-landmark styling resolver (Phase 2b): given a tile path, the matching "Tile"-category rule
     // (styling pass) or null. Lets a rule restyle/hide a surfaced landmark; null → default Landmark style.
-    Func<string, Web.DisplayRule?>? ResolveTile = null);
+    Func<string, Web.DisplayRule?>? ResolveTile = null,
+    // ── Atlas overlay (takes precedence over the minimap/radar when the Atlas screen is open). ──
+    bool AtlasOpen = false,                       // the Atlas screen is open → draw atlas highlights, suppress radar
+    IReadOnlyList<AtlasMark>? AtlasNodes = null,   // nodes to highlight (canvas-space coords)
+    // Atlas canvas→screen homography coefficients (h0..h7; h8=1). Shear/persp 0 ⇒ plain affine.
+    float AtlasScale = 0.5f,   // h0
+    float AtlasScaleY = 0.5f,  // h4
+    float AtlasOffX = 0f,      // h2
+    float AtlasOffY = 0f,      // h5
+    float AtlasShearX = 0f,    // h1
+    float AtlasShearY = 0f,    // h3
+    float AtlasPersX = 0f,     // h6
+    float AtlasPersY = 0f);    // h7

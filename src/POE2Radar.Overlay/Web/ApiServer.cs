@@ -49,6 +49,15 @@ public sealed class ApiServer : IDisposable
     private readonly DisplayRules _displayRules;
     private readonly LandmarkStore _landmarkStore;
     private readonly Func<IReadOnlyList<string>> _tiles;
+    // Atlas map-data provider (catalog + current-region map set). Read-only, computed on demand (it
+    // scans memory + caches), returns a JSON-ready object. Null when atlas reading is unavailable.
+    private readonly Func<object>? _atlas;
+    // Atlas node selection (element addresses) to highlight in-game; draw-only, loopback-gated.
+    private readonly Action<IReadOnlyList<long>>? _atlasSelect;
+    // Atlas highlight rules (tag + colour + track/arrow) — only matching nodes draw in-game; loopback-gated.
+    private readonly Action<IReadOnlyList<(string tag, string color, bool track, bool arrow)>>? _atlasHighlight;
+    // Version/update info provider ({current, latest, updateAvailable, url}) for the dashboard banner.
+    private readonly Func<object>? _version;
     private volatile bool _running;
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
@@ -63,9 +72,17 @@ public sealed class ApiServer : IDisposable
         DisplayRules displayRules,
         LandmarkStore landmarkStore,
         Func<IReadOnlyList<string>> tilesProvider,
+        Func<object>? atlasProvider = null,
+        Action<IReadOnlyList<long>>? atlasSelect = null,
+        Action<IReadOnlyList<(string tag, string color, bool track, bool arrow)>>? atlasHighlight = null,
+        Func<object>? versionProvider = null,
         int port = 7777)
     {
         _state = state;
+        _atlas = atlasProvider;
+        _atlasSelect = atlasSelect;
+        _atlasHighlight = atlasHighlight;
+        _version = versionProvider;
         _settings = settings;
         _navGet = navGet;
         _navToggle = navToggle;
@@ -289,6 +306,67 @@ public sealed class ApiServer : IDisposable
                 Write(ctx, 200, JsonSerializer.Serialize(new { tiles = _tiles() }, Json));
                 break;
 
+            case "/api/version":
+                // This build's version + latest known on GitHub + download URL (for the update banner).
+                Write(ctx, 200, JsonSerializer.Serialize(_version?.Invoke() ?? new { current = "?", latest = (string?)null, updateAvailable = false, url = "" }, Json));
+                break;
+
+            case "/api/atlas":
+                // Inspection view of the atlas map-data we can read (catalog + current-region map set).
+                // Read-only; the provider scans + caches, so the first call after entering the atlas
+                // may take a moment. Returns {located:false,...} when the catalog can't be found.
+                Write(ctx, 200, JsonSerializer.Serialize(_atlas?.Invoke() ?? new { located = false, note = "atlas reader unavailable" }, Json));
+                break;
+
+            case "/api/atlas-select":
+            {
+                // Set which atlas nodes (by element address) to highlight in-game. Draw-only; loopback-gated.
+                if (ctx.Request.HttpMethod != "POST") { Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json)); break; }
+                if (!IsLoopbackHost(ctx.Request)) { Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json)); break; }
+                var els = new List<long>();
+                try
+                {
+                    using var doc = JsonDocument.Parse(ReadBody(ctx));
+                    if (doc.RootElement.TryGetProperty("els", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                        foreach (var e in arr.EnumerateArray())
+                            if (e.ValueKind == JsonValueKind.String && long.TryParse(e.GetString(), out var v)) els.Add(v);
+                            else if (e.ValueKind == JsonValueKind.Number && e.TryGetInt64(out var n)) els.Add(n);
+                }
+                catch (JsonException) { }
+                _atlasSelect?.Invoke(els);
+                Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, count = els.Count }, Json));
+                break;
+            }
+
+            case "/api/atlas-highlight":
+            {
+                // Set the active atlas highlight rules (content tags). Only matching nodes draw in-game.
+                if (ctx.Request.HttpMethod != "POST") { Write(ctx, 405, JsonSerializer.Serialize(new { error = "method not allowed" }, Json)); break; }
+                if (!IsLoopbackHost(ctx.Request)) { Write(ctx, 403, JsonSerializer.Serialize(new { error = "forbidden host" }, Json)); break; }
+                var rules = new List<(string tag, string color, bool track, bool arrow)>();
+                try
+                {
+                    using var doc = JsonDocument.Parse(ReadBody(ctx));
+                    // "rules":[{ "tag":"…", "color":"#RRGGBB", "track":true, "arrow":false }].
+                    if (doc.RootElement.TryGetProperty("rules", out var rs) && rs.ValueKind == JsonValueKind.Array)
+                        foreach (var r in rs.EnumerateArray())
+                        {
+                            var tg = r.TryGetProperty("tag", out var tv) ? tv.GetString() : null;
+                            var col = r.TryGetProperty("color", out var cv) ? cv.GetString() : null;
+                            var track = !r.TryGetProperty("track", out var tk) || tk.ValueKind != JsonValueKind.False; // default true
+                            var arrow = r.TryGetProperty("arrow", out var aw) && aw.ValueKind == JsonValueKind.True;
+                            if (!string.IsNullOrEmpty(tg)) rules.Add((tg!, col ?? "", track, arrow));
+                        }
+                    else if (doc.RootElement.TryGetProperty("tags", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                        foreach (var t in arr.EnumerateArray())
+                            if (t.ValueKind == JsonValueKind.String && t.GetString() is { Length: > 0 } tg) rules.Add((tg, "", true, false));
+                }
+                catch (JsonException) { }
+                _atlasHighlight?.Invoke(rules);
+                Write(ctx, 200, JsonSerializer.Serialize(new { ok = true, count = rules.Count }, Json));
+                break;
+            }
+
             case "/api/landmarks":
             {
                 if (ctx.Request.HttpMethod == "GET")
@@ -355,6 +433,7 @@ public sealed class ApiServer : IDisposable
     {
         hideJunk = _settings.HideJunk,
         showPath = _settings.ShowPath,
+        alwaysShowOverlay = _settings.AlwaysShowOverlay,
         useCuratedLandmarks = _settings.UseCuratedLandmarks,
         landmarkClusterGap = _settings.LandmarkClusterGap,
         showMonsters = _settings.ShowMonsters,
@@ -368,6 +447,14 @@ public sealed class ApiServer : IDisposable
         scaleMul = _settings.ScaleMul,
         offX = _settings.OffX,
         offY = _settings.OffY,
+        atlasScale = _settings.AtlasScale,
+        atlasScaleY = _settings.AtlasScaleY,
+        atlasOffX = _settings.AtlasOffX,
+        atlasOffY = _settings.AtlasOffY,
+        atlasShearX = _settings.AtlasShearX,
+        atlasShearY = _settings.AtlasShearY,
+        atlasPersX = _settings.AtlasPersX,
+        atlasPersY = _settings.AtlasPersY,
         lifeThresholdPct = _settings.LifeThresholdPct,
         manaThresholdPct = _settings.ManaThresholdPct,
         esThresholdPct = _settings.EsThresholdPct,
@@ -399,11 +486,22 @@ public sealed class ApiServer : IDisposable
             {
                 case "hideJunk" when TryBool(p.Value, out var b): _settings.HideJunk = b; applied.Add(p.Name); break;
                 case "showPath" when TryBool(p.Value, out var b): _settings.ShowPath = b; applied.Add(p.Name); break;
+                case "alwaysShowOverlay" when TryBool(p.Value, out var b): _settings.AlwaysShowOverlay = b; applied.Add(p.Name); break;
                 case "useCuratedLandmarks" when TryBool(p.Value, out var b): _settings.UseCuratedLandmarks = b; applied.Add(p.Name); break;
                 case "landmarkClusterGap" when TryInt(p.Value, out var n): _settings.LandmarkClusterGap = Math.Clamp(n, 0, 64); applied.Add(p.Name); break;
                 case "scaleMul" when TryFloat(p.Value, out var f): _settings.ScaleMul = f; applied.Add(p.Name); break;
                 case "offX" when TryFloat(p.Value, out var f): _settings.OffX = f; applied.Add(p.Name); break;
                 case "offY" when TryFloat(p.Value, out var f): _settings.OffY = f; applied.Add(p.Name); break;
+                // Any manual projection edit flips AtlasCalibrated ⇒ the overlay uses these values instead of
+                // the live window-height auto projection (see RadarApp.AtlasProjection).
+                case "atlasScale" when TryFloat(p.Value, out var f): _settings.AtlasScale = Math.Clamp(f, 0.01f, 8f); _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasScaleY" when TryFloat(p.Value, out var f): _settings.AtlasScaleY = Math.Clamp(f, 0.01f, 8f); _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasOffX" when TryFloat(p.Value, out var f): _settings.AtlasOffX = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasOffY" when TryFloat(p.Value, out var f): _settings.AtlasOffY = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasShearX" when TryFloat(p.Value, out var f): _settings.AtlasShearX = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasShearY" when TryFloat(p.Value, out var f): _settings.AtlasShearY = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasPersX" when TryFloat(p.Value, out var f): _settings.AtlasPersX = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasPersY" when TryFloat(p.Value, out var f): _settings.AtlasPersY = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
                 case "showMonsters" when TryBool(p.Value, out var b): _settings.ShowMonsters = b; applied.Add(p.Name); break;
                 case "showTerrain" when TryBool(p.Value, out var b): _settings.ShowTerrain = b; applied.Add(p.Name); break;
                 case "showPlayerBlip" when TryBool(p.Value, out var b): _settings.ShowPlayerBlip = b; applied.Add(p.Name); break;

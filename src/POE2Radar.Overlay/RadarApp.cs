@@ -24,6 +24,7 @@ public sealed class RadarApp : IDisposable
     private readonly ProcessHandle _process;
     private readonly MemoryReader _reader;
     private readonly Poe2Live _live;
+    private readonly Poe2Atlas _atlas;
     private readonly OverlayWindow _window;
     private readonly OverlayRenderer _renderer;
     private readonly ApiServer _api;
@@ -38,7 +39,30 @@ public sealed class RadarApp : IDisposable
     private int _landmarkStoreGen;
     private int _appliedClusterGap;
     private nint _areaInstanceForApi;   // current AreaInstance, for the /api/tiles tile-path lookup
+    private nint _inGameStateForApi;    // current InGameState, for the /api/atlas node read
     private volatile RadarState _state = RadarState.Empty;
+
+    // ── Atlas overlay: live node highlights (takes precedence over the radar when the atlas is open). ──
+    private readonly object _atlasLock = new();
+    private readonly HashSet<nint> _atlasSel = new();   // selected node element addresses (from the dashboard)
+    private bool _atlasOpen;
+    private List<AtlasMark> _atlasMarks = new();
+    // In-game atlas calibration: hover a tile + F10 captures (relPos→cursor); F11 solves the homography
+    // and applies it; Shift+F10 resets. A FIXED rough projection identifies the tile under the cursor
+    // (stable — never uses the live homography, so a bad fit can't poison subsequent picks).
+    private readonly List<double[]> _atlasCalibPts = new();
+    private DateTime _nextCalibKeyAt = DateTime.MinValue;
+    // Live atlas zoom (= canvas/node scale @ +0x130; 0.85 max-out … larger zoomed in). The calibrated
+    // transform's linear part scales by liveZoom/calibZoom each frame: screen = (UIscale×zoom)·relPos +
+    // offset, and relPos is read live, so this tracks pan (relPos) AND zoom (this ratio) automatically.
+    private volatile float _atlasZoom = 0.85f;
+    private volatile UpdateChecker.Result? _update;   // GitHub version check (best-effort, set async at startup)
+    // Reference projection measured at 1080p with the atlas zoomed fully out (zoom 0.85): scale = UIscale×zoom
+    // = (1080/1600)×0.85 = 0.574, canvas-origin offset ≈ (15,13)px. BOTH terms scale linearly with UIscale
+    // (= winH/1600) and the live zoom, so the whole projection can be DERIVED from the live window height at
+    // any resolution — no per-resolution hand-calibration. See AutoAtlasProjection. (F10/F11 still overrides.)
+    private const float AtlasRefScale = (1080f / 1600f) * 0.85f; // 0.574 = UIscale×zoom at the reference
+    private static readonly (float X, float Y) AtlasRefOffset = (15f, 13f); // px, at AtlasRefScale
 
     /// <summary>Directory holding the user config files (shared with <see cref="RadarSettings"/>).</summary>
     private static string ConfigDir => Path.Combine(AppContext.BaseDirectory, "config");
@@ -122,6 +146,7 @@ public sealed class RadarApp : IDisposable
         Console.WriteLine($"Settings: {RadarSettings.FilePath}");
         Console.WriteLine($"Entity names: {EntityNameResolver.Shared.Count} mappings; zones: {ZoneGuide.Shared.Count}");
         _live = new Poe2Live(reader, gameStateSlot);
+        _atlas = new Poe2Atlas(reader);
         _window = OverlayWindow.Create();
         _renderer = new OverlayRenderer(_window);
         // Clicking a legend row toggles that landmark in the path selection. Purely local UI — the
@@ -141,9 +166,7 @@ public sealed class RadarApp : IDisposable
         if (_displayRules.Count == 0)
         {
             _displayRules.Replace(DisplayRules.BuildDefault(
-                _settings.Styles, _settings.ShowMonsters,
-                _settings.HpBarNormal, _settings.HpBarMagic, _settings.HpBarRare, _settings.HpBarUnique,
-                _watched.All));
+                _settings.Styles, _settings.ShowMonsters, _watched.All));
             Console.WriteLine($"Display rules: seeded {_displayRules.Count} from legacy config (first run).");
         }
         // One-time: fold any user landmark-tile patterns into Tile display rules (the unified system),
@@ -197,11 +220,36 @@ public sealed class RadarApp : IDisposable
         _landmarkStoreGen = _landmarkStore.Generation;
         Console.WriteLine($"Hidden entities: {_hidden.Count} pattern(s); display rules: {_displayRules.Count}");
         _api = new ApiServer(() => _state, _settings, GetNavSelection, ToggleNavTarget, ClearNavSelection,
-                             _hidden, _displayRules, _landmarkStore, CurrentTilePaths, _settings.ApiPort);
+                             _hidden, _displayRules, _landmarkStore, CurrentTilePaths, AtlasJson, SetAtlasSelection,
+                             SetAtlasHighlight, VersionJson, _settings.ApiPort);
         try { _api.Start(); Console.WriteLine($"API on http://localhost:{_settings.ApiPort} (dashboard at /)"); }
         catch (Exception ex) { Console.Error.WriteLine($"API server disabled: {ex.Message}"); }
         Console.WriteLine("Hotkeys: F6=add nearest path target  F7=clear path targets  "
                           + "F8=auto-flask  F9=quit  F12=open dashboard");
+        // Best-effort version check against GitHub (non-blocking; never fails startup).
+        _ = Task.Run(async () =>
+        {
+            var u = await UpdateChecker.CheckAsync();
+            _update = u;
+            if (u.UpdateAvailable)
+                Console.WriteLine($"\n*** UPDATE AVAILABLE: {u.Latest} — you have v{u.Current}. Download: {u.Url} ***\n");
+            else
+                Console.WriteLine($"POE2Radar v{u.Current}" + (u.Latest != null ? " (up to date)." : " (update check unavailable)."));
+        });
+    }
+
+    /// <summary>API (/api/version): this build's version + the latest known on GitHub + a download URL.
+    /// Lets the dashboard show an "update available" banner. Null-ish until the async check completes.</summary>
+    private object VersionJson()
+    {
+        var u = _update;
+        return new
+        {
+            current = u?.Current ?? UpdateChecker.Current,
+            latest = u?.Latest,
+            updateAvailable = u?.UpdateAvailable ?? false,
+            url = u?.Url ?? UpdateChecker.ReleasesPage,
+        };
     }
 
     public void Run()
@@ -234,6 +282,7 @@ public sealed class RadarApp : IDisposable
             // AreaInstance is a fresh object per area — use its address to invalidate per-area caches.
             if (areaInstance != _lastAreaInstance) { _terrain = null; _lastAreaInstance = areaInstance; }
             _areaInstanceForApi = areaInstance; // for /api/tiles
+            _inGameStateForApi = inGameState;   // for /api/atlas node read
             _areaHash = _live.AreaHash(areaInstance);
             areaLevel = _live.AreaLevel(areaInstance);
 
@@ -290,6 +339,12 @@ public sealed class RadarApp : IDisposable
                 }
                 _landmarks = _live.Landmarks(areaInstance); // cached per area in Poe2Live
 
+                // Atlas node highlights — ReadNodes is cheap when the atlas is closed (it gates on the
+                // atlas panel's visible bit before any whole-tree scan), so this is safe each world tick.
+                // When open, build marks for on-screen + selected nodes (the renderer culls the rest).
+                // Selection comes from the dashboard via the API.
+                BuildAtlasMarks(inGameState);
+
                 // Rebuild the unified navigation-target list (tiles + entity POIs) for this tick.
                 _navTargets = BuildNavTargets(player);
 
@@ -321,14 +376,19 @@ public sealed class RadarApp : IDisposable
         else
         {
             _selectedPaths = new List<SelectedPath>();
+            _atlasOpen = false;
         }
 
         _state = new RadarState(inGame, _areaHash, areaLevel, map.IsVisible, map.Zoom, player, _entities, _landmarks,
             _hpPct, _manaPct, _esPct, _autoFlask, _flaskNote, _areaCode, _charName, _charLevel);
 
+        var realActive = _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd;
+        // "Always show" draws the overlay even when PoE2 isn't focused (for dashboard calibration).
+        var drawActive = realActive || _settings.AlwaysShowOverlay;
+        var atlasProj = AtlasProjection(); // resolution-correct (auto from window height) or manual calib
         var ctx = new RenderContext(
             InGame: inGame,
-            Active: _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd,
+            Active: drawActive,
             WindowWidth: _window.Width,
             WindowHeight: _window.Height,
             PlayerGrid: player,
@@ -365,7 +425,21 @@ public sealed class RadarApp : IDisposable
             HpBars: _settings.HpBars,
             TerrainStyle: _settings.Terrain,
             Resolve: _displayRules.Resolve,
-            ResolveTile: p => _displayRules.ResolveTile(p, requireMatch: false));
+            ResolveTile: p => _displayRules.ResolveTile(p, requireMatch: false),
+            AtlasOpen: _atlasOpen,
+            AtlasNodes: _atlasMarks,
+            // Projection: derived live from the window height (UIscale = winH/1600) × live zoom unless the
+            // user manually calibrated (then their zoom-rescaled homography is used). relPos is read live so
+            // pan is already handled; the zoom term is folded into the scale either way. _atlasProj is the
+            // 8-coeff homography layout {h0..h7}. This is what makes non-1080p resolutions line up.
+            AtlasScale: (float)atlasProj[0],
+            AtlasScaleY: (float)atlasProj[4],
+            AtlasOffX: (float)atlasProj[2],
+            AtlasOffY: (float)atlasProj[5],
+            AtlasShearX: (float)atlasProj[1],
+            AtlasShearY: (float)atlasProj[3],
+            AtlasPersX: (float)atlasProj[6],
+            AtlasPersY: (float)atlasProj[7]);
         // The overlay is only visible while PoE2 is foreground (Render draws nothing otherwise). Skip
         // the whole draw + UpdateLayeredWindow blit when unfocused — but render once on the focus-loss
         // transition so the last visible frame is cleared rather than left frozen on screen.
@@ -377,8 +451,9 @@ public sealed class RadarApp : IDisposable
 
         // Make the overlay grab clicks only while the cursor is over a clickable legend row;
         // otherwise stay click-through so the game receives the clicks. Runs after Render so
-        // LegendRowRects reflects the frame just drawn.
-        UpdateClickThrough(ctx.Active);
+        // LegendRowRects reflects the frame just drawn. Gate on REAL focus (never grab clicks when
+        // PoE2 isn't foreground, even if "always show overlay" is keeping it drawn).
+        UpdateClickThrough(realActive);
     }
 
     /// <summary>
@@ -523,6 +598,136 @@ public sealed class RadarApp : IDisposable
             }
         }
 
+        // Atlas calibration: F10 = capture a tile↔cursor point (Shift+F10 = reset); F11 = solve + apply.
+        if (DateTime.UtcNow >= _nextCalibKeyAt)
+        {
+            if (Down(0x79)) // F10
+            {
+                _nextCalibKeyAt = DateTime.UtcNow.AddMilliseconds(250);
+                if ((GetAsyncKeyState(0x10) & 0x8000) != 0) { _atlasCalibPts.Clear(); Console.WriteLine("\nAtlas calib: points reset."); }
+                else AtlasCalibCapture();
+            }
+            else if (Down(0x7A)) // F11
+            {
+                _nextCalibKeyAt = DateTime.UtcNow.AddMilliseconds(250);
+                AtlasCalibSolve();
+            }
+        }
+    }
+
+    /// <summary>F10: capture one calibration point — the tile (IconType==0 node) under the cursor and the
+    /// cursor's screen position. Uses the FIXED rough projection to find the nearest tile (stable across
+    /// captures); the actual fit is solved later from all points.</summary>
+    private void AtlasCalibCapture()
+    {
+        if (_inGameStateForApi == 0 || !GetCursorPos(out var pt)) { Console.WriteLine("\nAtlas calib: not in game."); return; }
+        double cx = pt.X, cy = pt.Y; nint best = 0; double bd = 1e18, brx = 0, bry = 0;
+        foreach (var n in _atlas.ReadNodes(_inGameStateForApi))
+        {
+            if (n.IconType != 0 || !n.Visible) continue; // only clickable tiles (type>0 = offset tags)
+            var (sx, sy) = ProjectPick(n.X, n.Y);
+            var d = (sx - cx) * (sx - cx) + (sy - cy) * (sy - cy);
+            if (d < bd) { bd = d; best = n.Element; brx = n.X; bry = n.Y; }
+        }
+        if (best == 0) { Console.WriteLine("\nAtlas calib: no tile near cursor (in the Atlas?)."); return; }
+        _atlasCalibPts.Add(new[] { brx, bry, cx, cy });
+        Console.WriteLine($"\nAtlas calib: point {_atlasCalibPts.Count} (relPos {brx:F0},{bry:F0} -> screen {cx:F0},{cy:F0}, pickDist {Math.Sqrt(bd):F0}px). F11 to solve.");
+    }
+
+    /// <summary>F11: solve the canvas→screen homography (least-squares, outlier-rejecting) from the
+    /// captured points and apply it live + persist. Needs 4+ points; 6-8 spread points give the best fit.</summary>
+    private void AtlasCalibSolve()
+    {
+        if (_atlasCalibPts.Count < 4) { Console.WriteLine($"\nAtlas calib: need 4+ points (have {_atlasCalibPts.Count})."); return; }
+        var pts = _atlasCalibPts.Select(p => (double[])p.Clone()).ToList();
+
+        // Robust affine RANSAC: the dominant error is MIS-PICKS (a capture grabbed the wrong tile near the
+        // cursor) — not perspective. Keep the largest self-consistent subset, reject the rest. The atlas
+        // mapping is ~uniform scale + offset, so affine is the right model; a homography just over-fits a
+        // handful of hand-captured points (and the perspective it "finds" is the fit bending to outliers).
+        var rob = AtlasHomography.RobustFit(pts, inlierPx: 12);
+        if (rob == null)
+        {
+            Console.WriteLine($"\nAtlas calib: no consistent set among {pts.Count} pts. Likely all mis-picks — " +
+                              "recapture clicking tile CENTERS, well spread (corners + middle). Shift+F10 resets.");
+            return;
+        }
+        var (sol, inlierIdx) = rob.Value;
+        var inliers = inlierIdx.Select(i => pts[i]).ToList();
+        var rejected = pts.Count - inliers.Count;
+
+        // Perspective upgrade — a safety valve only. The model is scale+translation (validated); a
+        // homography needs a STRONG, well-supported signal to win (≥6 clean inliers, clearly lower error,
+        // tiny persp terms) or it just overfits a handful of hand-captured points.
+        var affMax = inliers.Max(p => AtlasHomography.Resid(sol, p));
+        var hom = AtlasHomography.Fit(inliers);
+        var usedPersp = false;
+        if (hom != null && inliers.Count >= 6)
+        {
+            var homMax = inliers.Max(p => AtlasHomography.Resid(hom, p));
+            if (homMax < affMax * 0.5 && Math.Abs(hom[6]) < 1e-3 && Math.Abs(hom[7]) < 1e-3) { sol = hom; usedPersp = true; }
+        }
+
+        _settings.AtlasScale = (float)sol[0]; _settings.AtlasShearX = (float)sol[1]; _settings.AtlasOffX = (float)sol[2];
+        _settings.AtlasShearY = (float)sol[3]; _settings.AtlasScaleY = (float)sol[4]; _settings.AtlasOffY = (float)sol[5];
+        _settings.AtlasPersX = (float)sol[6]; _settings.AtlasPersY = (float)sol[7];
+        _settings.AtlasCalibZoom = _atlasZoom > 0.01f ? _atlasZoom : 0.85f; // anchor zoom for live rescale
+        _settings.AtlasCalibrated = true; // this manual solve now OVERRIDES the auto window-height projection
+        _settings.Save();
+
+        var maxErr = inliers.Max(p => AtlasHomography.Resid(sol, p));
+        var rmsErr = Math.Sqrt(inliers.Average(p => { var r = AtlasHomography.Resid(sol, p); return r * r; }));
+        Console.WriteLine($"\nAtlas calib: SOLVED + applied — {inliers.Count} inliers, {rejected} rejected (mis-picks). " +
+                          $"model={(usedPersp ? "homography" : "scale+translate")}  max {maxErr:F1}px  rms {rmsErr:F1}px. Rings updated live.");
+        if (!usedPersp) Console.WriteLine($"  uniform scale≈{sol[0]:F3}/{sol[4]:F3}  offset=({sol[2]:F0},{sol[5]:F0})  (UIscale×zoom; will need rescaling on zoom)");
+        for (var i = 0; i < pts.Count; i++)
+            Console.WriteLine($"    pt{i}: relPos=({pts[i][0]:F0},{pts[i][1]:F0}) -> err {AtlasHomography.Resid(sol, pts[i]):F1}px {(inlierIdx.Contains(i) ? "" : "[REJECTED mis-pick]")}");
+    }
+
+    /// <summary>Project a node's canvas relPos to screen for tile PICKING. Uses the live applied transform
+    /// (settings) when it's been calibrated — accurate picks → fewer mis-grabs — falling back to the rough
+    /// reference before the first solve. Safe against a slightly-off transform now that the solve is
+    /// RANSAC-robust (a few bad picks are rejected, so picking can't poison the fit the way it used to).</summary>
+    private (double sx, double sy) ProjectPick(float x, float y)
+    {
+        // Same projection the renderer uses: the live window-height-derived auto transform until the user
+        // has a manual F10/F11 solve, then their calibrated homography. Resolution-correct either way, so
+        // picks land on the right tile at any resolution (was previously a 1080p-only rough fallback).
+        var s = AtlasProjection();
+        double w = s[6] * x + s[7] * y + 1; if (Math.Abs(w) < 1e-6) w = 1;
+        return ((s[0] * x + s[1] * y + s[2]) / w, (s[3] * x + s[4] * y + s[5]) / w);
+    }
+
+    /// <summary>Live zoom rescale factor for the calibrated transform's linear part: liveZoom / calibZoom.
+    /// 1.0 when at the calibrated zoom. Guards against a zero/garbage calib zoom.</summary>
+    private float AtlasZoomK
+    {
+        get { var cz = _settings.AtlasCalibZoom; return cz > 0.01f && _atlasZoom > 0.01f ? _atlasZoom / cz : 1f; }
+    }
+
+    /// <summary>The resolution-correct atlas projection (uniform scale + canvas-origin offset) derived LIVE
+    /// from the game window height and the live atlas zoom: screen = relPos × (UIscale×zoom) + offset, with
+    /// UIscale = winH/1600. Both scale and offset scale together off the 1080p reference, so this lines up at
+    /// any resolution with no hand-calibration. Used unless the user has an F10/F11 manual solve
+    /// (<see cref="RadarSettings.AtlasCalibrated"/>), which then overrides it. Returned as the 8-coeff
+    /// homography layout (shear + perspective = 0).</summary>
+    private double[] AutoAtlasProjection()
+    {
+        float uiScale = _window.Height > 0 ? _window.Height / 1600f : 1080f / 1600f;
+        float scale = uiScale * (_atlasZoom > 0.01f ? _atlasZoom : 0.85f);
+        float k = scale / AtlasRefScale; // offset scales with the same factor as the scale
+        return new double[] { scale, 0, AtlasRefOffset.X * k, 0, scale, AtlasRefOffset.Y * k, 0, 0 };
+    }
+
+    /// <summary>The atlas projection coefficients to render/pick with this frame: the user's manual F10/F11
+    /// solve (zoom-rescaled) when calibrated, otherwise the live window-height-derived auto projection.</summary>
+    private double[] AtlasProjection()
+    {
+        if (!_settings.AtlasCalibrated) return AutoAtlasProjection();
+        double k = AtlasZoomK;
+        return new double[] { _settings.AtlasScale * k, _settings.AtlasShearX * k, _settings.AtlasOffX,
+                              _settings.AtlasShearY * k, _settings.AtlasScaleY * k, _settings.AtlasOffY,
+                              _settings.AtlasPersX, _settings.AtlasPersY };
     }
 
     // ── Unified navigation-target selection (draw-only guidance, multi-select). ──────────────
@@ -984,6 +1189,152 @@ public sealed class RadarApp : IDisposable
     /// <summary>API: clear the whole nav selection. Safe to call concurrently with the tick loop.</summary>
     public void ClearNavSelection() => ClearPathTargets();
 
+    /// <summary>API (/api/atlas): a JSON-ready snapshot of the atlas map-data we can read — the full
+    /// map-archetype catalog and the set of map types present in the current atlas region. Inspection /
+    /// validation only (no spatial graph yet — see resources/atlas-research-notes.md). The reader scans
+    /// + caches, so the first call after entering the atlas may take a moment; called on the API thread.</summary>
+    private object AtlasJson()
+    {
+        // Anchor the scan to the live game-heap slab (the catalog shares the arena with AreaInstance).
+        var d = _atlas.Read(_lastAreaInstance);
+        // Live node graph (atlas nodes are UiElements) — summary + the locally-visible highlight set.
+        var nodes = _inGameStateForApi != 0 ? _atlas.ReadNodes(_inGameStateForApi) : new List<Poe2Atlas.AtlasNodeLive>();
+        var vis = nodes.Where(n => n.Visible).ToList();
+        return new
+        {
+            located = d.Located,
+            note = d.Note,
+            catalogAddr = $"0x{d.CatalogAddr:X}",
+            catalogCount = d.CatalogCount,
+            regionCount = d.Region.Count,
+            catalog = d.Catalog.Select(m => new { id = m.Id, code = m.Code, name = m.Name, kind = m.Kind, parsedObj = $"0x{m.ParsedObj:X}" }),
+            region = d.Region.Select(r => new { code = r.Code, name = r.Name, kind = r.Kind }),
+            nodes = new
+            {
+                total = nodes.Count,
+                visible = vis.Count,
+                hasContent = nodes.Count(n => n.HasContent),
+                unvisited = nodes.Count(n => !n.Visited),
+                unlocked = nodes.Count(n => n.Unlocked),
+                biomes = nodes.GroupBy(n => (int)n.Biome).OrderBy(g => g.Key).ToDictionary(g => g.Key.ToString(), g => g.Count()),
+            },
+            // Every distinct content tag currently on the atlas (+ count), for the dashboard's filter /
+            // highlight-rule pickers. These are the readable content/mechanic names (Powerful Map Boss,
+            // Breach, Delirium, …) resolved from each node's EndgameMapAtlas row.
+            allTags = nodes.SelectMany(n => n.Tags).GroupBy(t => t).OrderByDescending(g => g.Count())
+                .Select(g => new { tag = g.Key, count = g.Count() }),
+            // Distinct MAP NAMES (Sun Temple, Precursor Tower, Vaal City, …) — the separate "Map" filter
+            // group, so towers/temples/specific maps are highlightable independently of rolled content.
+            allMaps = nodes.Where(n => !string.IsNullOrEmpty(n.MapName)).GroupBy(n => n.MapName)
+                .OrderBy(g => g.Key).Select(g => new { tag = g.Key, count = g.Count() }),
+            // The currently active rules (persisted): tracked tags (rings) + arrow tags (off-screen
+            // direction). Match against BOTH content tags and map names.
+            highlightTags = _settings.AtlasHighlightTags,
+            arrowTags = _settings.AtlasArrowTags,
+            // The individual live nodes for the dashboard's grid. On-screen first, then content/unvisited.
+            nodeList = nodes
+                .OrderByDescending(n => n.Visible).ThenByDescending(n => n.HasContent).ThenByDescending(n => !n.Visited)
+                .Take(2000)
+                .Select(n => new
+                {
+                    el = ((long)n.Element).ToString(), // unique stable key (element address) for selection
+                    id = n.Id, biome = (int)n.Biome, type = n.IconType, hasContent = n.HasContent,
+                    unlocked = n.Unlocked, visited = n.Visited, visible = n.Visible,
+                    x = (int)n.X, y = (int)n.Y, map = n.MapName, tags = n.Tags,
+                }),
+        };
+    }
+
+    /// <summary>Read the live atlas nodes and build the highlight-mark list for the renderer. Cheap when
+    /// the atlas is closed (ReadNodes returns empty via its visibility gate). When open, marks the
+    /// on-screen nodes + any dashboard-selected nodes; the renderer projects + culls them.</summary>
+    private void BuildAtlasMarks(nint inGameState)
+    {
+        var nodes = _atlas.ReadNodes(inGameState);
+        if (nodes.Count == 0) { _atlasOpen = false; if (_atlasMarks.Count > 0) _atlasMarks = new(); return; }
+        _atlasOpen = true;
+        // Live zoom = the nodes' shared canvas scale (+0x130). Use the median (robust to a stray 0/odd node).
+        var scales = nodes.Where(n => n.Scale > 0.01f).Select(n => n.Scale).OrderBy(s => s).ToList();
+        if (scales.Count > 0) _atlasZoom = scales[scales.Count / 2];
+        HashSet<nint> sel; lock (_atlasLock) sel = new HashSet<nint>(_atlasSel);
+
+        // One-time default: track + arrow every Citadel (high-value, usually off-screen) until the user
+        // edits the rules from the dashboard. Boss is intentionally NOT defaulted (too common). Wait until
+        // tag resolution has caught up (it's budget-limited per tick) so we seed ALL citadels, not just the
+        // first batch resolved.
+        if (!_settings.AtlasRulesInitialized && _atlas.AllTagsResolved)
+        {
+            var cit = nodes.Where(n => !string.IsNullOrEmpty(n.MapName) && n.MapName.Contains("Citadel", StringComparison.OrdinalIgnoreCase))
+                           .Select(n => n.MapName).Distinct().ToList();
+            if (cit.Count > 0)
+            {
+                _settings.AtlasHighlightTags = new List<string>(cit);
+                _settings.AtlasArrowTags = new List<string>(cit);
+                foreach (var c in cit) _settings.AtlasHighlightColors[c] = "#e0b341"; // Citadel gold
+                _settings.AtlasRulesInitialized = true;
+                _settings.Save();
+            }
+        }
+
+        // A node matches a rule set if its map name or one of its content tags is in the set; returns the
+        // matched tag (drives label + colour). Track set ⇒ draw a ring; Arrow set ⇒ off-screen edge arrow.
+        var hlTrack = new HashSet<string>(_settings.AtlasHighlightTags ?? new(), StringComparer.OrdinalIgnoreCase);
+        var hlArrow = new HashSet<string>(_settings.AtlasArrowTags ?? new(), StringComparer.OrdinalIgnoreCase);
+        static string? Match(HashSet<string> set, in Poe2Atlas.AtlasNodeLive nd)
+        {
+            if (set.Count == 0) return null;
+            if (!string.IsNullOrEmpty(nd.MapName) && set.Contains(nd.MapName)) return nd.MapName;
+            if (nd.Tags is { Count: > 0 }) foreach (var t in nd.Tags) if (set.Contains(t)) return t;
+            return null;
+        }
+        var marks = new List<AtlasMark>(128);
+        foreach (var n in nodes)
+        {
+            var selected = sel.Contains(n.Element);
+            var mTrack = Match(hlTrack, n);
+            var mArrow = Match(hlArrow, n);
+            var isTracked = selected || mTrack != null;
+            var isArrow = mArrow != null;
+            // ONLY tracked/arrow maps are drawn (the point: surface content the game hides). AtlasDrawAll
+            // debug overrides this to draw every node.
+            if (!_settings.AtlasDrawAll && !isTracked && !isArrow) continue;
+            var matched = mTrack ?? mArrow;
+            var label = matched ?? (n.Tags is { Count: > 0 } ? n.Tags[0] : (string.IsNullOrEmpty(n.MapName) ? null : n.MapName));
+            string? color = matched != null && _settings.AtlasHighlightColors.TryGetValue(matched, out var c) ? c : null;
+            marks.Add(new AtlasMark(n.X, n.Y, isTracked, n.HasContent, n.Visited, n.Unlocked, n.Biome, n.IconType, label, color, isArrow));
+        }
+        _atlasMarks = marks;
+    }
+
+    /// <summary>API: set the dashboard-selected atlas nodes (by element address) to highlight in-game.
+    /// Draw-only — never sends input to the game. Safe to call from the API thread.</summary>
+    public void SetAtlasSelection(IReadOnlyList<long> els)
+    {
+        lock (_atlasLock) { _atlasSel.Clear(); foreach (var e in els) _atlasSel.Add((nint)e); }
+    }
+
+    /// <summary>API: set the active atlas highlight rules (tag + ring colour). Only nodes whose content
+    /// tags or map name match one of these are drawn in-game, in the rule's colour. Persisted; applied on
+    /// the next world tick. Draw-only.</summary>
+    public void SetAtlasHighlight(IReadOnlyList<(string tag, string color, bool track, bool arrow)> rules)
+    {
+        var tags = new List<string>(); var arrows = new List<string>();
+        var colors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (tag, color, track, arrow) in rules)
+        {
+            if (string.IsNullOrWhiteSpace(tag) || !seen.Add(tag)) continue;
+            if (track) tags.Add(tag);
+            if (arrow) arrows.Add(tag);
+            if (!string.IsNullOrWhiteSpace(color)) colors[tag] = color;
+        }
+        _settings.AtlasHighlightTags = tags;
+        _settings.AtlasArrowTags = arrows;
+        _settings.AtlasHighlightColors = colors;
+        _settings.AtlasRulesInitialized = true;   // any explicit edit locks out the Citadel default-seed
+        _settings.Save();
+    }
+
     /// <summary>Open the web dashboard in the user's default browser (F12). Launches a browser only —
     /// nothing is sent to the game.</summary>
     private void OpenDashboard()
@@ -1004,6 +1355,9 @@ public sealed class RadarApp : IDisposable
 
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
+
+    [StructLayout(LayoutKind.Sequential)] private struct CursorPoint { public int X, Y; }
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out CursorPoint p);
 
     public void Dispose()
     {
