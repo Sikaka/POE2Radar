@@ -47,22 +47,19 @@ public sealed class RadarApp : IDisposable
     private readonly HashSet<nint> _atlasSel = new();   // selected node element addresses (from the dashboard)
     private bool _atlasOpen;
     private List<AtlasMark> _atlasMarks = new();
-    // In-game atlas calibration: hover a tile + F10 captures (relPos→cursor); F11 solves the homography
-    // and applies it; Shift+F10 resets. A FIXED rough projection identifies the tile under the cursor
-    // (stable — never uses the live homography, so a bad fit can't poison subsequent picks).
-    private readonly List<double[]> _atlasCalibPts = new();
-    private DateTime _nextCalibKeyAt = DateTime.MinValue;
-    // Live atlas zoom (= canvas/node scale @ +0x130; 0.85 max-out … larger zoomed in). The calibrated
-    // transform's linear part scales by liveZoom/calibZoom each frame: screen = (UIscale×zoom)·relPos +
-    // offset, and relPos is read live, so this tracks pan (relPos) AND zoom (this ratio) automatically.
+    // In-game tile inspector: hover a tile + F10 dumps its readable fields (map name, content tags,
+    // biome, flags) as an on-atlas tooltip, so you can see exactly what to type as a web-UI filter when
+    // something doesn't match. Picks the nearest tile under the cursor via the live auto projection.
+    private AtlasInspect? _atlasInspect;              // current tooltip (null = none); tick-thread only
+    private DateTime _atlasInspectAt = DateTime.MinValue;
+    private DateTime _nextInspectAt = DateTime.MinValue; // hotkey debounce
+    // Live atlas zoom (= canvas/node scale @ +0x130; 0.85 max-out … larger zoomed in). relPos is read
+    // live (pan baked in) and the projection scales by this zoom, so rings track pan AND zoom.
     private volatile float _atlasZoom = 0.85f;
     private volatile UpdateChecker.Result? _update;   // GitHub version check (best-effort, set async at startup)
-    // Reference projection measured at 1080p with the atlas zoomed fully out (zoom 0.85): scale = UIscale×zoom
-    // = (1080/1600)×0.85 = 0.574, canvas-origin offset ≈ (15,13)px. BOTH terms scale linearly with UIscale
-    // (= winH/1600) and the live zoom, so the whole projection can be DERIVED from the live window height at
-    // any resolution — no per-resolution hand-calibration. See AutoAtlasProjection. (F10/F11 still overrides.)
-    private const float AtlasRefScale = (1080f / 1600f) * 0.85f; // 0.574 = UIscale×zoom at the reference
-    private static readonly (float X, float Y) AtlasRefOffset = (15f, 13f); // px, at AtlasRefScale
+    // Atlas projection is derived live from the game window height (UIscale = winH/1600 × live zoom) in
+    // AtlasProjection — resolution-correct, no calibration. (The 1080p reference: scale = (1080/1600)×0.85
+    // ≈ 0.574 at max zoom-out, offset 0.)
 
     /// <summary>Directory holding the user config files (shared with <see cref="RadarSettings"/>).</summary>
     private static string ConfigDir => Path.Combine(AppContext.BaseDirectory, "config");
@@ -439,7 +436,9 @@ public sealed class RadarApp : IDisposable
             AtlasShearX: (float)atlasProj[1],
             AtlasShearY: (float)atlasProj[3],
             AtlasPersX: (float)atlasProj[6],
-            AtlasPersY: (float)atlasProj[7]);
+            AtlasPersY: (float)atlasProj[7],
+            // Tile-inspector tooltip: show while the Atlas is open and the capture is recent (8s).
+            AtlasInspect: (_atlasOpen && _atlasInspect is { } ai && (DateTime.UtcNow - _atlasInspectAt).TotalSeconds < 8) ? ai : null);
         // The overlay is only visible while PoE2 is foreground (Render draws nothing otherwise). Skip
         // the whole draw + UpdateLayeredWindow blit when unfocused — but render once on the focus-loss
         // transition so the last visible frame is cleared rather than left frozen on screen.
@@ -593,136 +592,70 @@ public sealed class RadarApp : IDisposable
             }
         }
 
-        // Atlas calibration: F10 = capture a tile↔cursor point (Shift+F10 = reset); F11 = solve + apply.
-        if (DateTime.UtcNow >= _nextCalibKeyAt)
+        // Atlas tile inspector: F10 = dump the tile under the cursor (map/content/biome/flags) as an
+        // on-atlas tooltip so you can see what to set as a web-UI filter.
+        if (Down(0x79) && DateTime.UtcNow >= _nextInspectAt) // F10
         {
-            if (Down(0x79)) // F10
-            {
-                _nextCalibKeyAt = DateTime.UtcNow.AddMilliseconds(250);
-                if ((GetAsyncKeyState(0x10) & 0x8000) != 0) { _atlasCalibPts.Clear(); Console.WriteLine("\nAtlas calib: points reset."); }
-                else AtlasCalibCapture();
-            }
-            else if (Down(0x7A)) // F11
-            {
-                _nextCalibKeyAt = DateTime.UtcNow.AddMilliseconds(250);
-                AtlasCalibSolve();
-            }
+            _nextInspectAt = DateTime.UtcNow.AddMilliseconds(250);
+            AtlasInspectCapture();
         }
     }
 
-    /// <summary>F10: capture one calibration point — the tile (IconType==0 node) under the cursor and the
-    /// cursor's screen position. Uses the FIXED rough projection to find the nearest tile (stable across
-    /// captures); the actual fit is solved later from all points.</summary>
-    private void AtlasCalibCapture()
+    /// <summary>F10: inspect the tile under the cursor. INVERTS the same projection the renderer draws rings
+    /// with (screen = relPos × scale ⇒ relPos = screen / scale) to map the cursor into canvas space once,
+    /// then picks the tile whose box CONTAINS that point (fallback: nearest centre). Because it's the exact
+    /// inverse of the ring projection, a tile that lines up on screen resolves back to itself — no per-node
+    /// forward projection, no drift. Stashes the tile's readable fields as an on-atlas tooltip (drawn by the
+    /// renderer) so the user sees the exact map / content / biome to set as a web-UI filter; also echoed to
+    /// the console.</summary>
+    private void AtlasInspectCapture()
     {
-        if (_inGameStateForApi == 0 || !GetCursorPos(out var pt)) { Console.WriteLine("\nAtlas calib: not in game."); return; }
-        double cx = pt.X, cy = pt.Y; nint best = 0; double bd = 1e18, brx = 0, bry = 0;
+        if (_inGameStateForApi == 0 || !GetCursorPos(out var pt)) { Console.WriteLine("\nTile inspect: not in game."); return; }
+        // Invert the shared projection: for screen = relPos × scale (offset/shear/persp = 0), relPos = screen/scale.
+        var proj = AtlasProjection();
+        double scaleX = Math.Abs(proj[0]) > 1e-6 ? proj[0] : 1, scaleY = Math.Abs(proj[4]) > 1e-6 ? proj[4] : 1;
+        double curX = pt.X / scaleX, curY = pt.Y / scaleY; // cursor in canvas/relPos units
+
+        Poe2Atlas.AtlasNodeLive? bestIn = null, bestAny = null; double bdIn = 1e18, bdAny = 1e18;
         foreach (var n in _atlas.ReadNodes(_inGameStateForApi))
         {
-            if (n.IconType != 0 || !n.Visible) continue; // only clickable tiles (type>0 = offset tags)
-            var (sx, sy) = ProjectPick(n.X, n.Y);
-            var d = (sx - cx) * (sx - cx) + (sy - cy) * (sy - cy);
-            if (d < bd) { bd = d; best = n.Element; brx = n.X; bry = n.Y; }
+            // Consider every visible map node. (Do NOT filter on IconType: it's non-zero exactly when the
+            // tile carries a content sigil — boss/breach/etc. — so filtering it would skip the very tiles
+            // with mechanics. That filter belonged to the old calibration capture, not the inspector.)
+            if (!n.Visible) continue;
+            double dx = curX - n.X, dy = curY - n.Y, d = dx * dx + dy * dy;
+            if (d < bdAny) { bdAny = d; bestAny = n; }     // nearest centre (fallback)
+            double hw = (n.W > 1 ? n.W : 40) * 0.5, hh = (n.H > 1 ? n.H : 40) * 0.5; // tile half-extents (canvas units)
+            if (Math.Abs(dx) <= hw && Math.Abs(dy) <= hh && d < bdIn) { bdIn = d; bestIn = n; } // cursor inside the tile box
         }
-        if (best == 0) { Console.WriteLine("\nAtlas calib: no tile near cursor (in the Atlas?)."); return; }
-        _atlasCalibPts.Add(new[] { brx, bry, cx, cy });
-        Console.WriteLine($"\nAtlas calib: point {_atlasCalibPts.Count} (relPos {brx:F0},{bry:F0} -> screen {cx:F0},{cy:F0}, pickDist {Math.Sqrt(bd):F0}px). F11 to solve.");
-    }
+        if ((bestIn ?? bestAny) is not { } b) { Console.WriteLine("\nTile inspect: no tile near cursor (is the Atlas open?)."); return; }
 
-    /// <summary>F11: solve the canvas→screen homography (least-squares, outlier-rejecting) from the
-    /// captured points and apply it live + persist. Needs 4+ points; 6-8 spread points give the best fit.</summary>
-    private void AtlasCalibSolve()
-    {
-        if (_atlasCalibPts.Count < 4) { Console.WriteLine($"\nAtlas calib: need 4+ points (have {_atlasCalibPts.Count})."); return; }
-        var pts = _atlasCalibPts.Select(p => (double[])p.Clone()).ToList();
+        Console.WriteLine($"\n[pick] cursorCanvas=({curX:F0},{curY:F0}) tile relPos=({b.X:F0},{b.Y:F0}) " +
+                          $"Δ=({curX - b.X:F0},{curY - b.Y:F0}) {(bestIn != null ? "INSIDE" : "nearest")} size=({b.W:F0}x{b.H:F0}) " +
+                          $"zoom={_atlasZoom:F3} win={_window.Width}x{_window.Height}");
 
-        // Robust affine RANSAC: the dominant error is MIS-PICKS (a capture grabbed the wrong tile near the
-        // cursor) — not perspective. Keep the largest self-consistent subset, reject the rest. The atlas
-        // mapping is ~uniform scale + offset, so affine is the right model; a homography just over-fits a
-        // handful of hand-captured points (and the perspective it "finds" is the fit bending to outliers).
-        var rob = AtlasHomography.RobustFit(pts, inlierPx: 12);
-        if (rob == null)
+        var lines = new List<string>
         {
-            Console.WriteLine($"\nAtlas calib: no consistent set among {pts.Count} pts. Likely all mis-picks — " +
-                              "recapture clicking tile CENTERS, well spread (corners + middle). Shift+F10 resets.");
-            return;
-        }
-        var (sol, inlierIdx) = rob.Value;
-        var inliers = inlierIdx.Select(i => pts[i]).ToList();
-        var rejected = pts.Count - inliers.Count;
-
-        // Perspective upgrade — a safety valve only. The model is scale+translation (validated); a
-        // homography needs a STRONG, well-supported signal to win (≥6 clean inliers, clearly lower error,
-        // tiny persp terms) or it just overfits a handful of hand-captured points.
-        var affMax = inliers.Max(p => AtlasHomography.Resid(sol, p));
-        var hom = AtlasHomography.Fit(inliers);
-        var usedPersp = false;
-        if (hom != null && inliers.Count >= 6)
-        {
-            var homMax = inliers.Max(p => AtlasHomography.Resid(hom, p));
-            if (homMax < affMax * 0.5 && Math.Abs(hom[6]) < 1e-3 && Math.Abs(hom[7]) < 1e-3) { sol = hom; usedPersp = true; }
-        }
-
-        _settings.AtlasScale = (float)sol[0]; _settings.AtlasShearX = (float)sol[1]; _settings.AtlasOffX = (float)sol[2];
-        _settings.AtlasShearY = (float)sol[3]; _settings.AtlasScaleY = (float)sol[4]; _settings.AtlasOffY = (float)sol[5];
-        _settings.AtlasPersX = (float)sol[6]; _settings.AtlasPersY = (float)sol[7];
-        _settings.AtlasCalibZoom = _atlasZoom > 0.01f ? _atlasZoom : 0.85f; // anchor zoom for live rescale
-        _settings.AtlasCalibrated = true; // this manual solve now OVERRIDES the auto window-height projection
-        _settings.Save();
-
-        var maxErr = inliers.Max(p => AtlasHomography.Resid(sol, p));
-        var rmsErr = Math.Sqrt(inliers.Average(p => { var r = AtlasHomography.Resid(sol, p); return r * r; }));
-        Console.WriteLine($"\nAtlas calib: SOLVED + applied — {inliers.Count} inliers, {rejected} rejected (mis-picks). " +
-                          $"model={(usedPersp ? "homography" : "scale+translate")}  max {maxErr:F1}px  rms {rmsErr:F1}px. Rings updated live.");
-        if (!usedPersp) Console.WriteLine($"  uniform scale≈{sol[0]:F3}/{sol[4]:F3}  offset=({sol[2]:F0},{sol[5]:F0})  (UIscale×zoom; will need rescaling on zoom)");
-        for (var i = 0; i < pts.Count; i++)
-            Console.WriteLine($"    pt{i}: relPos=({pts[i][0]:F0},{pts[i][1]:F0}) -> err {AtlasHomography.Resid(sol, pts[i]):F1}px {(inlierIdx.Contains(i) ? "" : "[REJECTED mis-pick]")}");
+            string.IsNullOrEmpty(b.MapName) ? "map: (unknown)" : "map: " + b.MapName,
+            "content: " + (b.Tags is { Count: > 0 } ? string.Join(", ", b.Tags) : "(none)"),
+            $"biome {b.Biome} · {(b.Unlocked ? "unlocked" : "locked")} · {(b.Visited ? "visited" : "unvisited")}{(b.HasContent ? " · has content" : "")}",
+            $"id {b.Id} · content 0x{b.Content:X} · icon {b.IconType}",
+        };
+        _atlasInspect = new AtlasInspect(b.X, b.Y, lines);
+        _atlasInspectAt = DateTime.UtcNow;
+        Console.WriteLine("\nTile inspect — " + string.Join("  |  ", lines));
     }
 
-    /// <summary>Project a node's canvas relPos to screen for tile PICKING. Uses the live applied transform
-    /// (settings) when it's been calibrated — accurate picks → fewer mis-grabs — falling back to the rough
-    /// reference before the first solve. Safe against a slightly-off transform now that the solve is
-    /// RANSAC-robust (a few bad picks are rejected, so picking can't poison the fit the way it used to).</summary>
-    private (double sx, double sy) ProjectPick(float x, float y)
-    {
-        // Same projection the renderer uses: the live window-height-derived auto transform until the user
-        // has a manual F10/F11 solve, then their calibrated homography. Resolution-correct either way, so
-        // picks land on the right tile at any resolution (was previously a 1080p-only rough fallback).
-        var s = AtlasProjection();
-        double w = s[6] * x + s[7] * y + 1; if (Math.Abs(w) < 1e-6) w = 1;
-        return ((s[0] * x + s[1] * y + s[2]) / w, (s[3] * x + s[4] * y + s[5]) / w);
-    }
-
-    /// <summary>Live zoom rescale factor for the calibrated transform's linear part: liveZoom / calibZoom.
-    /// 1.0 when at the calibrated zoom. Guards against a zero/garbage calib zoom.</summary>
-    private float AtlasZoomK
-    {
-        get { var cz = _settings.AtlasCalibZoom; return cz > 0.01f && _atlasZoom > 0.01f ? _atlasZoom / cz : 1f; }
-    }
-
-    /// <summary>The resolution-correct atlas projection (uniform scale + canvas-origin offset) derived LIVE
-    /// from the game window height and the live atlas zoom: screen = relPos × (UIscale×zoom) + offset, with
-    /// UIscale = winH/1600. Both scale and offset scale together off the 1080p reference, so this lines up at
-    /// any resolution with no hand-calibration. Used unless the user has an F10/F11 manual solve
-    /// (<see cref="RadarSettings.AtlasCalibrated"/>), which then overrides it. Returned as the 8-coeff
-    /// homography layout (shear + perspective = 0).</summary>
-    private double[] AutoAtlasProjection()
+    /// <summary>The atlas projection, derived LIVE from the game window height and live atlas zoom:
+    /// screen = relPos × (UIscale×zoom), UIscale = winH/1600. Pure uniform scale, NO offset — relPos
+    /// already has pan baked in and the canvas origin sits at screen (0,0) (the long-proven 1080p default
+    /// was scale≈0.572 / offset 0). This is what lines up at any resolution with no hand-calibration.
+    /// Returned in the 8-coeff homography layout (shear + perspective + offset = 0).</summary>
+    private double[] AtlasProjection()
     {
         float uiScale = _window.Height > 0 ? _window.Height / 1600f : 1080f / 1600f;
         float scale = uiScale * (_atlasZoom > 0.01f ? _atlasZoom : 0.85f);
-        float k = scale / AtlasRefScale; // offset scales with the same factor as the scale
-        return new double[] { scale, 0, AtlasRefOffset.X * k, 0, scale, AtlasRefOffset.Y * k, 0, 0 };
-    }
-
-    /// <summary>The atlas projection coefficients to render/pick with this frame: the user's manual F10/F11
-    /// solve (zoom-rescaled) when calibrated, otherwise the live window-height-derived auto projection.</summary>
-    private double[] AtlasProjection()
-    {
-        if (!_settings.AtlasCalibrated) return AutoAtlasProjection();
-        double k = AtlasZoomK;
-        return new double[] { _settings.AtlasScale * k, _settings.AtlasShearX * k, _settings.AtlasOffX,
-                              _settings.AtlasShearY * k, _settings.AtlasScaleY * k, _settings.AtlasOffY,
-                              _settings.AtlasPersX, _settings.AtlasPersY };
+        return new double[] { scale, 0, 0, 0, scale, 0, 0, 0 };
     }
 
     // ── Unified navigation-target selection (draw-only guidance, multi-select). ──────────────

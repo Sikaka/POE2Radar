@@ -62,32 +62,15 @@ public sealed class RadarSettings
     public float OffX { get; set; } = 0f;
     public float OffY { get; set; } = 0f;
 
-    // ── Atlas overlay projection (canvas RelativePos → screen = pos × AtlasScale + offset). Calibrated
-    //    live from the dashboard Atlas tab via the click-a-node → see-the-ring loop. ──
     // Draw the overlay even when PoE2 isn't the foreground window (e.g. while tweaking the dashboard).
     // Auto-flask stays foreground-gated regardless (safety). Default off (overlay hides when unfocused).
     public bool AlwaysShowOverlay { get; set; } = false;
 
-    // Atlas canvas→screen is a homography (perspective; the atlas plane is tilted):
-    //   w = persX·x + persY·y + 1;  sx = (scale·x + shearX·y + offX)/w;  sy = (shearY·x + scaleY·y + offY)/w
-    // Shear/persp default 0 ⇒ reduces to a plain x/y affine. Solved from 4 node↔cursor correspondences.
-    public float AtlasScale { get; set; } = 0.572f;  // h0 (X scale) ≈ UIscale×zoom
-    public float AtlasScaleY { get; set; } = 0.572f; // h4 (Y scale)
-    public float AtlasOffX { get; set; } = 0f;      // h2
-    public float AtlasOffY { get; set; } = 0f;      // h5
-    public float AtlasShearX { get; set; } = 0f;    // h1
-    public float AtlasShearY { get; set; } = 0f;    // h3
-    public float AtlasPersX { get; set; } = 0f;     // h6
-    public float AtlasPersY { get; set; } = 0f;     // h7
-    // The atlas zoom (canvas scale @ +0x130) that was active when the transform was calibrated. At render
-    // the linear part is rescaled by liveZoom/AtlasCalibZoom so the overlay tracks zoom in/out.
-    public float AtlasCalibZoom { get; set; } = 0.85f;
-    // False (default) ⇒ the projection is DERIVED LIVE from the game window height (UIscale = winH/1600)
-    // × live zoom, so it's correct at any resolution out of the box. Set true only by an F10/F11 manual
-    // solve, which then takes over (its measured scale/offset/shear/persp override the auto formula). This
-    // is what makes non-1080p resolutions line up without hand-calibration. The AtlasScale/Off* fields
-    // above are only consulted when this is true.
-    public bool AtlasCalibrated { get; set; } = false;
+    // NOTE: the atlas canvas→screen projection has NO stored settings — it's derived live from the game
+    // window height (UIscale = winH/1600 × live zoom) in RadarApp.AtlasProjection, so it's resolution-
+    // correct everywhere with no calibration. (The old F10/F11 homography calibration + its AtlasScale/
+    // Off/Shear/Pers/CalibZoom settings were removed; F10 now inspects the tile under the cursor.)
+
     // Atlas highlight rules: only nodes whose content tags include one of these are drawn in-game (the
     // point is to surface content the game hides by default). Set live from the dashboard Atlas tab.
     // Matched case-insensitively against each node's resolved content tags (e.g. "Breach", "Powerful Map Boss").

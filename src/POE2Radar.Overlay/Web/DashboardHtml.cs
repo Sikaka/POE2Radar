@@ -461,16 +461,7 @@ internal static class DashboardHtml
                 <span class="hint-row" style="padding:8px;display:block">Open the Atlas in-game + Refresh to list filters.</span>
               </div>
             </div>
-            <details style="margin-top:10px">
-              <summary class="hint-row" style="cursor:pointer">Projection calibration (advanced &mdash; normally set in-game with F10&times;6-8 on tiles, then F11)</summary>
-              <div class="controls" style="margin:8px 0;gap:14px;align-items:center">
-                <label class="rl" style="font-size:12px">scaleX <input class="numin" type="number" step="0.01" min="0.01" max="8" data-set="atlasScale" style="width:70px"></label>
-                <label class="rl" style="font-size:12px">scaleY <input class="numin" type="number" step="0.01" min="0.01" max="8" data-set="atlasScaleY" style="width:70px"></label>
-                <label class="rl" style="font-size:12px">offX <input class="numin" type="number" step="2" data-set="atlasOffX" style="width:70px"></label>
-                <label class="rl" style="font-size:12px">offY <input class="numin" type="number" step="2" data-set="atlasOffY" style="width:70px"></label>
-                <span class="hint-row" style="flex:1">Nudge until rings sit on the nodes in-game.</span>
-              </div>
-            </details>
+            <div class="row"><div class="rl hint-row">Ring positions are computed automatically from your window size &mdash; no calibration needed. Hover a tile in-game and press <b>F10</b> to inspect its map / content / biome (so you know what to type as a filter above).</div></div>
           </div>
         </div>
       </section>

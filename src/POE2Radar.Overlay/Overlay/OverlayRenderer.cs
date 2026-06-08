@@ -103,6 +103,7 @@ public sealed class OverlayRenderer : IDisposable
                 // The Atlas screen is open: its overlay takes precedence — draw ONLY the atlas node
                 // highlights, never the world radar/minimap (which would be meaningless over the atlas).
                 DrawAtlas(rt, ctx);
+                DrawAtlasInspect(rt, ctx);                 // tile-inspector tooltip (F10)
                 _legendRowRects.Clear();
             }
             else if (ctx.Active && ctx.InGame)
@@ -187,6 +188,39 @@ public sealed class OverlayRenderer : IDisposable
             if (label != null)
                 rt.DrawText(label, _tf!, new Rect(sx + 11f, sy - 9f, sx + 220f, sy + 11f), _bText!, DrawTextOptions.Clip);
         }
+    }
+
+    /// <summary>The F10 tile-inspector tooltip: a small panel near the inspected tile listing its readable
+    /// fields (map name, content tags, biome, flags), so the user can see exactly what to type as a web-UI
+    /// filter. The tile's canvas relPos is projected with the same atlas transform as the rings, so the box
+    /// tracks pan/zoom. A cyan ring marks the inspected tile itself.</summary>
+    private void DrawAtlasInspect(ID2D1RenderTarget rt, RenderContext ctx)
+    {
+        if (ctx.AtlasInspect is not { Lines.Count: > 0 } ins) return;
+        float h0 = ctx.AtlasScale, h1 = ctx.AtlasShearX, h2 = ctx.AtlasOffX,
+              h3 = ctx.AtlasShearY, h4 = ctx.AtlasScaleY, h5 = ctx.AtlasOffY,
+              h6 = ctx.AtlasPersX, h7 = ctx.AtlasPersY;
+        var w = h6 * ins.X + h7 * ins.Y + 1f;
+        if (MathF.Abs(w) < 1e-6f) return;
+        var sx = (h0 * ins.X + h1 * ins.Y + h2) / w;
+        var sy = (h3 * ins.X + h4 * ins.Y + h5) / w;
+
+        var cyan = new Color4(0.235f, 0.86f, 1f, 1f);
+        // Mark the inspected tile.
+        _bStyle!.Color = cyan;
+        rt.DrawEllipse(new Ellipse(new NumVec2(sx, sy), 13f, 13f), _bStyle, 2.5f);
+
+        // Tooltip box, offset down-right of the tile, clamped on-screen.
+        const float lh = 16f, padX = 9f, padY = 7f, boxW = 250f;
+        float boxH = padY * 2f + lh * ins.Lines.Count;
+        float bx = Math.Clamp(sx + 16f, 0f, MathF.Max(0f, ctx.WindowWidth - boxW));
+        float by = Math.Clamp(sy + 14f, 0f, MathF.Max(0f, ctx.WindowHeight - boxH));
+        var box = new Vortice.RawRectF(bx, by, bx + boxW, by + boxH);
+        rt.FillRectangle(box, _bPanel!);
+        _bStyle.Color = cyan;
+        rt.DrawRectangle(box, _bStyle, 1.5f);
+        for (var i = 0; i < ins.Lines.Count; i++)
+            rt.DrawText(ins.Lines[i], _tf!, new Rect(bx + padX, by + padY + i * lh, bx + boxW - 4f, by + padY + (i + 1) * lh + 2f), _bText!, DrawTextOptions.Clip);
     }
 
     /// <summary>Draw an edge arrow pointing from screen-centre toward an OFF-SCREEN atlas map (sx,sy), so

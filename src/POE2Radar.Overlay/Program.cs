@@ -20,7 +20,7 @@ if (slot == 0)
 
 Console.WriteLine();
 Console.WriteLine("Radar running. Open the in-game map to see terrain + entities.");
-Console.WriteLine("Calibrate projection: PageUp/PageDown = scale, Arrow keys = offset, Home = reset.");
+Console.WriteLine("Atlas: open it in-game; rings are auto-positioned. F10 over a tile = inspect its map/content/biome.");
 Console.WriteLine("Ctrl+C to exit.");
 
 using var app = new RadarApp(process, reader, slot);

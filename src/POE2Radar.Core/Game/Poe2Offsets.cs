@@ -323,8 +323,8 @@ public static class Poe2
     /// <c>screen = (UIscale × zoom) × relPos + offset</c>, where relPos = +0x118 (read live; the game
     /// rewrites it on PAN so pan is free), zoom = +0x130 (read live; ~0.85 max zoom-out → larger zoomed
     /// in), UIscale = winH/1600, offset ≈ factor×½icon ≈ (15,13) @ 1080p/zoom-0.85. NOT a perspective
-    /// homography. The overlay calibrates the offset once (F10/F11, scale+translate RANSAC) and rescales
-    /// the linear part by liveZoom/calibZoom each frame. <b>Recovery after a patch:</b> run
+    /// homography. The overlay derives the WHOLE projection live from the window height + live zoom
+    /// (RadarApp.AtlasProjection) — resolution-correct with no calibration. <b>Recovery after a patch:</b> run
     /// <c>POE2Radar.Research --atlas-probe</c> (Atlas map open) — it re-locates the class + canvas,
     /// validates every offset, and prints the derived projection. Only the node-class vtable drifts.
     /// See resources/atlas-research-notes.md "FULLY SOLVED".</para></summary>
