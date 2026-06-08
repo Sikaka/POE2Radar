@@ -264,7 +264,8 @@ internal static class DashboardHtml
   .drrow.hideon{opacity:.72}
   .drrow.hideon .iconpick,.drrow.hideon .dr-color,.drrow.hideon .dr-op,.drrow.hideon .dr-size,.drrow.hideon .dr-label,.drrow.hideon .opv{opacity:.4; pointer-events:none}
   /* consolidated HP-bar card: per-rarity grid + shared geometry footer */
-  .hpgrid{display:grid; grid-template-columns:64px 1fr 30px 1fr; gap:9px 11px; align-items:center; padding:4px 0 2px}
+  .hpgrid{display:grid; grid-template-columns:30px 64px 1fr 30px 1fr; gap:9px 11px; align-items:center; padding:4px 0 2px}
+  .hpgrid input[type=checkbox]{margin:0; justify-self:center}
   .hpgrid .hph{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); text-align:right}
   .hpgrid .hph:first-child{text-align:left}
   .hpgrid .hpr{font-size:12px; color:var(--ink)}
@@ -495,21 +496,25 @@ internal static class DashboardHtml
           </div>
           <div class="card">
             <h3>Monster HP Bars <span class="tag">&middot; by rarity</span></h3>
-            <div class="row"><div class="rl hint-row">Show/hide an HP bar per rule via the <b>HP bar</b> checkbox in the <b>Rules</b> tab. Below sets the bar <i>geometry</i> per rarity.</div></div>
+            <div class="row"><div class="rl hint-row">Toggle the bar on/off per rarity with the <b>On</b> checkbox &mdash; uncheck all to disable HP bars entirely, or leave only the rarities you want. The rest sets the bar <i>geometry</i> per rarity.</div></div>
             <div class="hpgrid">
-              <span class="hph">Rarity</span><span class="hph">Width</span><span class="hph">Border</span><span class="hph">Thick</span>
+              <span class="hph">On</span><span class="hph">Rarity</span><span class="hph">Width</span><span class="hph">Border</span><span class="hph">Thick</span>
+              <input type="checkbox" data-set="hpBarNormal">
               <span class="hpr">Normal</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthNormal">
               <input type="color" class="i-color" data-hpcolor="borderColorNormal">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderNormal">
+              <input type="checkbox" data-set="hpBarMagic">
               <span class="hpr" style="color:var(--magic)">Magic</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthMagic">
               <input type="color" class="i-color" data-hpcolor="borderColorMagic">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderMagic">
+              <input type="checkbox" data-set="hpBarRare">
               <span class="hpr" style="color:var(--rare)">Rare</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthRare">
               <input type="color" class="i-color" data-hpcolor="borderColorRare">
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderRare">
+              <input type="checkbox" data-set="hpBarUnique">
               <span class="hpr" style="color:var(--unique)">Unique</span>
               <input class="numin" type="number" step="1" min="4" data-hp="widthUnique">
               <input type="color" class="i-color" data-hpcolor="borderColorUnique">
@@ -825,7 +830,6 @@ function drSummary(r){
 function drRow(r,i){
   const open=!!r._open, cats=r.categories||[];
   const badges=(r.hide?'<span class="drbadge hide">hide</span>':'')
-    +(r.hpBar?'<span class="drbadge">HP</span>':'')
     +(r.navigable?'<span class="drbadge">path</span>':'');
   const body=open?`<div class="drbody">
       <div class="top"><input class="mname dr-name" value="${esc(r.name)}" placeholder="rule name"></div>
@@ -840,7 +844,6 @@ function drRow(r,i){
         <input type="range" class="op dr-op" min="0" max="100" value="${pct(r.opacity)}"><span class="opv">${pct(r.opacity)}%</span>
         <input type="number" class="numin sz dr-size" step="0.1" min="0.5" value="${r.size}">
         <input class="mname dr-label" style="flex:1;min-width:70px" value="${esc(r.label||'')}" placeholder="label (optional)">
-        <label class="drflag" title="show a world-space HP bar (monsters)"><input type="checkbox" class="dr-hp"${r.hpBar?' checked':''}> HP bar</label>
         <label class="drflag" title="qualify as an auto-path navigation target"><input type="checkbox" class="dr-nav"${r.navigable?' checked':''}> Auto-path</label>
       </div>
     </div>`:'';
@@ -882,7 +885,6 @@ function renderDrules(){
     const op=row.querySelector('.dr-op'),opv=row.querySelector('.opv'); op.oninput=()=>opv.textContent=op.value+'%'; op.onchange=()=>{ r.opacity=(+op.value)/100; save(); };
     row.querySelector('.dr-size').onchange=e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)){ r.size=v; save(); } };
     row.querySelector('.dr-label').onchange=e=>{ r.label=e.target.value; save(); };
-    row.querySelector('.dr-hp').onchange=e=>{ r.hpBar=e.target.checked; save(); };
     row.querySelector('.dr-nav').onchange=e=>{ r.navigable=e.target.checked; save(); };
   });
 }

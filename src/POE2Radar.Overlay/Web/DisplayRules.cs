@@ -36,7 +36,6 @@ public sealed class DisplayRule
     public float Opacity { get; set; } = 1f;
     public float Size { get; set; } = 3f;
     public string? Label { get; set; }                      // optional text label drawn next to the dot
-    public bool HpBar { get; set; }                         // draw the world-space HP bar (monsters)
     public bool Navigable { get; set; }                     // reserved (Phase 2): qualifies as a nav target
 }
 
@@ -172,12 +171,11 @@ public sealed class DisplayRules
     ///   Object/Other POIs).</item>
     /// </list>
     /// Disabled categories / ShowMonsters-off seed the corresponding rule as <c>Enabled=false</c>.
-    /// (Phase 1 leaves the hidden/junk pre-filters, HP-bar path, and nav qualification external; the
-    /// per-rarity <c>HpBar</c> flags are seeded for a later phase but not yet consulted.)
+    /// (Phase 1 leaves the hidden/junk pre-filters and nav qualification external. HP bars are NOT a rule
+    /// concern — they're monster-only and gated entirely by the per-rarity toggles in Settings.)
     /// </summary>
     public static List<DisplayRule> BuildDefault(
-        RadarStyles st, bool showMonsters, bool hpNormal, bool hpMagic, bool hpRare, bool hpUnique,
-        IEnumerable<WatchedEntry> watched)
+        RadarStyles st, bool showMonsters, IEnumerable<WatchedEntry> watched)
     {
         var rules = new List<DisplayRule>();
 
@@ -206,16 +204,16 @@ public sealed class DisplayRules
             });
 
         // 4) Category defaults.
-        void Mon(string rarity, IconStyle s, bool hp) => rules.Add(new DisplayRule
+        void Mon(string rarity, IconStyle s) => rules.Add(new DisplayRule
         {
             Name = $"Monster · {rarity}", Enabled = s.Enabled && showMonsters,
             Categories = new() { "Monster" }, Reaction = "Hostile", Rarity = rarity,
-            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size, HpBar = hp,
+            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size,
         });
-        Mon("Unique", st.MonsterUnique, hpUnique);
-        Mon("Rare",   st.MonsterRare,   hpRare);
-        Mon("Magic",  st.MonsterMagic,  hpMagic);
-        Mon("Normal", st.MonsterNormal, hpNormal);
+        Mon("Unique", st.MonsterUnique);
+        Mon("Rare",   st.MonsterRare);
+        Mon("Magic",  st.MonsterMagic);
+        Mon("Normal", st.MonsterNormal);
 
         void Cat(string name, string category, string? rarity, IconStyle s) => rules.Add(new DisplayRule
         {

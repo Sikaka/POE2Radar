@@ -489,14 +489,16 @@ public sealed class ApiServer : IDisposable
                 case "scaleMul" when TryFloat(p.Value, out var f): _settings.ScaleMul = f; applied.Add(p.Name); break;
                 case "offX" when TryFloat(p.Value, out var f): _settings.OffX = f; applied.Add(p.Name); break;
                 case "offY" when TryFloat(p.Value, out var f): _settings.OffY = f; applied.Add(p.Name); break;
-                case "atlasScale" when TryFloat(p.Value, out var f): _settings.AtlasScale = Math.Clamp(f, 0.01f, 8f); applied.Add(p.Name); break;
-                case "atlasScaleY" when TryFloat(p.Value, out var f): _settings.AtlasScaleY = Math.Clamp(f, 0.01f, 8f); applied.Add(p.Name); break;
-                case "atlasOffX" when TryFloat(p.Value, out var f): _settings.AtlasOffX = f; applied.Add(p.Name); break;
-                case "atlasOffY" when TryFloat(p.Value, out var f): _settings.AtlasOffY = f; applied.Add(p.Name); break;
-                case "atlasShearX" when TryFloat(p.Value, out var f): _settings.AtlasShearX = f; applied.Add(p.Name); break;
-                case "atlasShearY" when TryFloat(p.Value, out var f): _settings.AtlasShearY = f; applied.Add(p.Name); break;
-                case "atlasPersX" when TryFloat(p.Value, out var f): _settings.AtlasPersX = f; applied.Add(p.Name); break;
-                case "atlasPersY" when TryFloat(p.Value, out var f): _settings.AtlasPersY = f; applied.Add(p.Name); break;
+                // Any manual projection edit flips AtlasCalibrated ⇒ the overlay uses these values instead of
+                // the live window-height auto projection (see RadarApp.AtlasProjection).
+                case "atlasScale" when TryFloat(p.Value, out var f): _settings.AtlasScale = Math.Clamp(f, 0.01f, 8f); _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasScaleY" when TryFloat(p.Value, out var f): _settings.AtlasScaleY = Math.Clamp(f, 0.01f, 8f); _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasOffX" when TryFloat(p.Value, out var f): _settings.AtlasOffX = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasOffY" when TryFloat(p.Value, out var f): _settings.AtlasOffY = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasShearX" when TryFloat(p.Value, out var f): _settings.AtlasShearX = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasShearY" when TryFloat(p.Value, out var f): _settings.AtlasShearY = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasPersX" when TryFloat(p.Value, out var f): _settings.AtlasPersX = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
+                case "atlasPersY" when TryFloat(p.Value, out var f): _settings.AtlasPersY = f; _settings.AtlasCalibrated = true; applied.Add(p.Name); break;
                 case "showMonsters" when TryBool(p.Value, out var b): _settings.ShowMonsters = b; applied.Add(p.Name); break;
                 case "showTerrain" when TryBool(p.Value, out var b): _settings.ShowTerrain = b; applied.Add(p.Name); break;
                 case "showPlayerBlip" when TryBool(p.Value, out var b): _settings.ShowPlayerBlip = b; applied.Add(p.Name); break;

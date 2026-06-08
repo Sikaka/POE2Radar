@@ -339,6 +339,22 @@ public static class Poe2
         public const int ContentVec  = 0x350; // (community) StdVector begin (content list); End @ +0x358
     }
 
+    /// <summary>Atlas screen panel — a PERSISTENT direct child of UiRoot (the element at
+    /// <c>InGameState+0x2F0</c>, walked via its Children StdVector <c>+0x10</c>) at <see cref="UiRootChildIndex"/>.
+    /// Present from a cold launch even when the atlas has NEVER been opened (✓ live 2026-06-08); its
+    /// UiElement visible bit (Flags <c>+0x180</c> bit <c>0x0B</c>) is the only thing that toggles when the
+    /// atlas opens/closes (closed flags 0x5626F5 → open 0x562EF5). This is the cheap atlas open-gate:
+    /// reading this one element's visible bit is ~4 reads, versus BFS-walking the ~50k-element UI tree to
+    /// (re)detect the node class — which while the atlas is closed can never succeed and so would burn that
+    /// BFS every retry. <b>If a patch shifts UiRoot's children this index drifts</b> — re-discover by
+    /// diffing the DevTree <c>/api/ui-flat</c> tree closed-vs-open (the element whose visible bit flips at
+    /// the shallowest stable path). <see cref="ExpectedChildCount"/> is a secondary signature (18 children).</summary>
+    public static class AtlasPanel
+    {
+        public const int UiRootChildIndex  = 22; // ✓ live 2026-06-08 — stable across a cold restart
+        public const int ExpectedChildCount = 18; // ✓ signature (panel had 18 children closed + open)
+    }
+
     /// <summary>World hover tracker (community, 2026-06-07): <c>*(UiRoot+0x7D8)+0x630</c>; hovered entity
     /// at +0x18. Singletons share vtable (image+0x2D707D8). The capture anchor for "what am I pointing at".</summary>
     public static class HoverTracker

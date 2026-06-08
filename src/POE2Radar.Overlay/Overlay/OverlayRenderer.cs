@@ -219,10 +219,11 @@ public sealed class OverlayRenderer : IDisposable
 
     /// <summary>
     /// World-space HP bars over monsters, projected via the camera WorldToScreen matrix. Drawn whether
-    /// or not the big map is open (it's a heads-up combat overlay). Now driven by the unified ruleset:
-    /// a bar shows iff the entity's resolved display rule has <c>HpBar=true</c> (and isn't a Hide rule),
-    /// so friendly/hidden/normal-by-config mobs are handled by the same rules as their dots. The fill is
-    /// the rule's (dot) color; only the bar GEOMETRY (width/border/offset) stays per-rarity from HpBars.
+    /// or not the big map is open (it's a heads-up combat overlay). HP bars are a MONSTER-ONLY concept,
+    /// gated entirely by the per-rarity on/off toggles in Settings (HpBarNormal/Magic/Rare/Unique) — they
+    /// are NOT a display-rule concern. The resolved rule is still consulted for two things: it must not be
+    /// a Hide rule (no bars over hidden mobs), and the bar FILL follows the mob's dot color. Bar GEOMETRY
+    /// (width/border/offset) is per-rarity from HpBars.
     /// </summary>
     private void DrawNameplates(ID2D1RenderTarget rt, RenderContext ctx)
     {
@@ -233,10 +234,22 @@ public sealed class OverlayRenderer : IDisposable
         {
             if (!e.IsAlive || e.HpMax <= 0) continue; // needs a live HP pool
 
-            var rule = ctx.Resolve?.Invoke(e);
-            if (rule is null || rule.Hide || !rule.HpBar) continue;
+            // Per-rarity master toggle (Settings) — the sole on/off for monster HP bars. NonMonster
+            // rarities have no toggle ⇒ no bar.
+            var rarityOn = e.Rarity switch
+            {
+                Poe2Live.Rarity.Normal => ctx.HpBarNormal,
+                Poe2Live.Rarity.Magic  => ctx.HpBarMagic,
+                Poe2Live.Rarity.Rare   => ctx.HpBarRare,
+                Poe2Live.Rarity.Unique => ctx.HpBarUnique,
+                _                      => false,
+            };
+            if (!rarityOn) continue;
 
-            // Geometry per rarity (NonMonster → width 0 → skip); fill = the rule's dot color.
+            var rule = ctx.Resolve?.Invoke(e);
+            if (rule is null || rule.Hide) continue; // no bars over hidden mobs; fill follows the dot color
+
+            // Geometry per rarity; fill = the rule's dot color.
             var (bw, colorHex, borderW, borderHex) = e.Rarity switch
             {
                 Poe2Live.Rarity.Normal => (hb.WidthNormal, rule.Color, hb.BorderNormal, hb.BorderColorNormal),

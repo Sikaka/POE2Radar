@@ -57,9 +57,12 @@ public sealed class RadarApp : IDisposable
     // offset, and relPos is read live, so this tracks pan (relPos) AND zoom (this ratio) automatically.
     private volatile float _atlasZoom = 0.85f;
     private volatile UpdateChecker.Result? _update;   // GitHub version check (best-effort, set async at startup)
-    // Pre-first-calibration pick fallback. Scale ≈ UIscale×zoom (measured ~0.572 = 0.675@1080p × 0.85 zoom),
-    // uniform in x/y; offset is small + pan-invariant (pan lives in relPos). Only used until the first solve.
-    private static readonly double[] RoughAtlas = { 0.572, 0, 15, 0, 0.572, 13, 0, 0 }; // h0,h1,h2,h3,h4,h5,h6,h7
+    // Reference projection measured at 1080p with the atlas zoomed fully out (zoom 0.85): scale = UIscale×zoom
+    // = (1080/1600)×0.85 = 0.574, canvas-origin offset ≈ (15,13)px. BOTH terms scale linearly with UIscale
+    // (= winH/1600) and the live zoom, so the whole projection can be DERIVED from the live window height at
+    // any resolution — no per-resolution hand-calibration. See AutoAtlasProjection. (F10/F11 still overrides.)
+    private const float AtlasRefScale = (1080f / 1600f) * 0.85f; // 0.574 = UIscale×zoom at the reference
+    private static readonly (float X, float Y) AtlasRefOffset = (15f, 13f); // px, at AtlasRefScale
 
     /// <summary>Directory holding the user config files (shared with <see cref="RadarSettings"/>).</summary>
     private static string ConfigDir => Path.Combine(AppContext.BaseDirectory, "config");
@@ -163,9 +166,7 @@ public sealed class RadarApp : IDisposable
         if (_displayRules.Count == 0)
         {
             _displayRules.Replace(DisplayRules.BuildDefault(
-                _settings.Styles, _settings.ShowMonsters,
-                _settings.HpBarNormal, _settings.HpBarMagic, _settings.HpBarRare, _settings.HpBarUnique,
-                _watched.All));
+                _settings.Styles, _settings.ShowMonsters, _watched.All));
             Console.WriteLine($"Display rules: seeded {_displayRules.Count} from legacy config (first run).");
         }
         // One-time: fold any user landmark-tile patterns into Tile display rules (the unified system),
@@ -338,9 +339,10 @@ public sealed class RadarApp : IDisposable
                 }
                 _landmarks = _live.Landmarks(areaInstance); // cached per area in Poe2Live
 
-                // Atlas node highlights — ReadNodes is cheap when the atlas is closed (visibility gate),
-                // so this is safe to call each world tick. When open, build marks for on-screen + selected
-                // nodes (the renderer culls the rest). Selection comes from the dashboard via the API.
+                // Atlas node highlights — ReadNodes is cheap when the atlas is closed (it gates on the
+                // atlas panel's visible bit before any whole-tree scan), so this is safe each world tick.
+                // When open, build marks for on-screen + selected nodes (the renderer culls the rest).
+                // Selection comes from the dashboard via the API.
                 BuildAtlasMarks(inGameState);
 
                 // Rebuild the unified navigation-target list (tiles + entity POIs) for this tick.
@@ -383,6 +385,7 @@ public sealed class RadarApp : IDisposable
         var realActive = _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd;
         // "Always show" draws the overlay even when PoE2 isn't focused (for dashboard calibration).
         var drawActive = realActive || _settings.AlwaysShowOverlay;
+        var atlasProj = AtlasProjection(); // resolution-correct (auto from window height) or manual calib
         var ctx = new RenderContext(
             InGame: inGame,
             Active: drawActive,
@@ -425,16 +428,18 @@ public sealed class RadarApp : IDisposable
             ResolveTile: p => _displayRules.ResolveTile(p, requireMatch: false),
             AtlasOpen: _atlasOpen,
             AtlasNodes: _atlasMarks,
-            // Rescale the LINEAR part by liveZoom/calibZoom (offset + persp unchanged) so the overlay
-            // tracks zoom. relPos is read live, so pan is already handled; this adds zoom on top.
-            AtlasScale: _settings.AtlasScale * AtlasZoomK,
-            AtlasScaleY: _settings.AtlasScaleY * AtlasZoomK,
-            AtlasOffX: _settings.AtlasOffX,
-            AtlasOffY: _settings.AtlasOffY,
-            AtlasShearX: _settings.AtlasShearX * AtlasZoomK,
-            AtlasShearY: _settings.AtlasShearY * AtlasZoomK,
-            AtlasPersX: _settings.AtlasPersX,
-            AtlasPersY: _settings.AtlasPersY);
+            // Projection: derived live from the window height (UIscale = winH/1600) × live zoom unless the
+            // user manually calibrated (then their zoom-rescaled homography is used). relPos is read live so
+            // pan is already handled; the zoom term is folded into the scale either way. _atlasProj is the
+            // 8-coeff homography layout {h0..h7}. This is what makes non-1080p resolutions line up.
+            AtlasScale: (float)atlasProj[0],
+            AtlasScaleY: (float)atlasProj[4],
+            AtlasOffX: (float)atlasProj[2],
+            AtlasOffY: (float)atlasProj[5],
+            AtlasShearX: (float)atlasProj[1],
+            AtlasShearY: (float)atlasProj[3],
+            AtlasPersX: (float)atlasProj[6],
+            AtlasPersY: (float)atlasProj[7]);
         // The overlay is only visible while PoE2 is foreground (Render draws nothing otherwise). Skip
         // the whole draw + UpdateLayeredWindow blit when unfocused — but render once on the focus-loss
         // transition so the last visible frame is cleared rather than left frozen on screen.
@@ -662,6 +667,7 @@ public sealed class RadarApp : IDisposable
         _settings.AtlasShearY = (float)sol[3]; _settings.AtlasScaleY = (float)sol[4]; _settings.AtlasOffY = (float)sol[5];
         _settings.AtlasPersX = (float)sol[6]; _settings.AtlasPersY = (float)sol[7];
         _settings.AtlasCalibZoom = _atlasZoom > 0.01f ? _atlasZoom : 0.85f; // anchor zoom for live rescale
+        _settings.AtlasCalibrated = true; // this manual solve now OVERRIDES the auto window-height projection
         _settings.Save();
 
         var maxErr = inliers.Max(p => AtlasHomography.Resid(sol, p));
@@ -679,12 +685,10 @@ public sealed class RadarApp : IDisposable
     /// RANSAC-robust (a few bad picks are rejected, so picking can't poison the fit the way it used to).</summary>
     private (double sx, double sy) ProjectPick(float x, float y)
     {
-        // A meaningfully-scaled settings transform means we've calibrated at least once; trust it. The
-        // linear part is rescaled by the live zoom ratio so picks stay accurate if zoom changed since.
-        double k = AtlasZoomK;
-        var s = Math.Abs(_settings.AtlasScale) > 0.05f
-            ? new double[] { _settings.AtlasScale * k, _settings.AtlasShearX * k, _settings.AtlasOffX, _settings.AtlasShearY * k, _settings.AtlasScaleY * k, _settings.AtlasOffY, _settings.AtlasPersX, _settings.AtlasPersY }
-            : RoughAtlas;
+        // Same projection the renderer uses: the live window-height-derived auto transform until the user
+        // has a manual F10/F11 solve, then their calibrated homography. Resolution-correct either way, so
+        // picks land on the right tile at any resolution (was previously a 1080p-only rough fallback).
+        var s = AtlasProjection();
         double w = s[6] * x + s[7] * y + 1; if (Math.Abs(w) < 1e-6) w = 1;
         return ((s[0] * x + s[1] * y + s[2]) / w, (s[3] * x + s[4] * y + s[5]) / w);
     }
@@ -694,6 +698,31 @@ public sealed class RadarApp : IDisposable
     private float AtlasZoomK
     {
         get { var cz = _settings.AtlasCalibZoom; return cz > 0.01f && _atlasZoom > 0.01f ? _atlasZoom / cz : 1f; }
+    }
+
+    /// <summary>The resolution-correct atlas projection (uniform scale + canvas-origin offset) derived LIVE
+    /// from the game window height and the live atlas zoom: screen = relPos × (UIscale×zoom) + offset, with
+    /// UIscale = winH/1600. Both scale and offset scale together off the 1080p reference, so this lines up at
+    /// any resolution with no hand-calibration. Used unless the user has an F10/F11 manual solve
+    /// (<see cref="RadarSettings.AtlasCalibrated"/>), which then overrides it. Returned as the 8-coeff
+    /// homography layout (shear + perspective = 0).</summary>
+    private double[] AutoAtlasProjection()
+    {
+        float uiScale = _window.Height > 0 ? _window.Height / 1600f : 1080f / 1600f;
+        float scale = uiScale * (_atlasZoom > 0.01f ? _atlasZoom : 0.85f);
+        float k = scale / AtlasRefScale; // offset scales with the same factor as the scale
+        return new double[] { scale, 0, AtlasRefOffset.X * k, 0, scale, AtlasRefOffset.Y * k, 0, 0 };
+    }
+
+    /// <summary>The atlas projection coefficients to render/pick with this frame: the user's manual F10/F11
+    /// solve (zoom-rescaled) when calibrated, otherwise the live window-height-derived auto projection.</summary>
+    private double[] AtlasProjection()
+    {
+        if (!_settings.AtlasCalibrated) return AutoAtlasProjection();
+        double k = AtlasZoomK;
+        return new double[] { _settings.AtlasScale * k, _settings.AtlasShearX * k, _settings.AtlasOffX,
+                              _settings.AtlasShearY * k, _settings.AtlasScaleY * k, _settings.AtlasOffY,
+                              _settings.AtlasPersX, _settings.AtlasPersY };
     }
 
     // ── Unified navigation-target selection (draw-only guidance, multi-select). ──────────────

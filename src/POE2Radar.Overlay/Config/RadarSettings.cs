@@ -82,6 +82,12 @@ public sealed class RadarSettings
     // The atlas zoom (canvas scale @ +0x130) that was active when the transform was calibrated. At render
     // the linear part is rescaled by liveZoom/AtlasCalibZoom so the overlay tracks zoom in/out.
     public float AtlasCalibZoom { get; set; } = 0.85f;
+    // False (default) ⇒ the projection is DERIVED LIVE from the game window height (UIscale = winH/1600)
+    // × live zoom, so it's correct at any resolution out of the box. Set true only by an F10/F11 manual
+    // solve, which then takes over (its measured scale/offset/shear/persp override the auto formula). This
+    // is what makes non-1080p resolutions line up without hand-calibration. The AtlasScale/Off* fields
+    // above are only consulted when this is true.
+    public bool AtlasCalibrated { get; set; } = false;
     // Atlas highlight rules: only nodes whose content tags include one of these are drawn in-game (the
     // point is to surface content the game hides by default). Set live from the dashboard Atlas tab.
     // Matched case-insensitively against each node's resolved content tags (e.g. "Breach", "Powerful Map Boss").
