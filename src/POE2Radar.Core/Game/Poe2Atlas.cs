@@ -329,7 +329,17 @@ public sealed class Poe2Atlas
                 }
             }
 
-            // (Re)detect — throttled so a closed atlas doesn't BFS 60k elements every tick.
+            // Cheap open-gate (the key cost saver). We only reach here with NO cached canvas — i.e. the
+            // atlas has never been opened this session, or the cache self-healed. DetectNodeClass below
+            // BFS-walks the entire (~50k-element) UI tree, and while the atlas is CLOSED it can never
+            // succeed (the node elements aren't instantiated until first open), so without this gate it
+            // would burn that whole-tree BFS on every retry — the entire time you're mapping. Instead,
+            // gate on the atlas panel's visible bit (a persistent UiRoot child; ~4 reads). Closed → bail
+            // cheaply. Fail-safe: any read failure reads as closed, so a drifted index degrades to
+            // feature-off, never back to a per-tick BFS.
+            if (!AtlasPanelOpen(uiRoot)) return nodes;
+
+            // (Re)detect — throttled so even with the gate open we don't BFS 50k elements every tick.
             if (_nodeRetry++ % 30 != 0) return nodes;
             if (!DetectNodeClass(uiRoot)) return nodes;
             if (HierarchicallyVisible(_nodeCanvas)) ReadCanvasNodes(_nodeCanvas, nodes);
@@ -473,6 +483,22 @@ public sealed class Poe2Atlas
         var parts = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         for (var i = 0; i < parts.Length; i++) parts[i] = char.ToUpperInvariant(parts[i][0]) + parts[i][1..];
         return string.Join(' ', parts);
+    }
+
+    /// <summary>Cheap "is the Atlas screen open?" gate used to avoid the whole-tree node-class BFS while
+    /// the atlas is closed. The atlas panel is a persistent UiRoot child at a fixed index
+    /// (<see cref="Poe2.AtlasPanel.UiRootChildIndex"/>) whose visible bit toggles with the panel — so this
+    /// is ~4 reads. Validates the indexed element is a real UiElement (Self==self) first; returns false on
+    /// any read failure (fail-safe: a drifted index degrades to feature-off, not a per-tick BFS).</summary>
+    private bool AtlasPanelOpen(nint uiRoot)
+    {
+        if (uiRoot == 0) return false;
+        var first = Ptr(uiRoot + Poe2.UiElement.Children);
+        if (first == 0) return false;
+        var panel = Ptr(first + (nint)(Poe2.AtlasPanel.UiRootChildIndex * 8));
+        if (panel == 0 || Ptr(panel + Poe2.UiElement.Self) != panel) return false;   // not a UiElement
+        if (!_reader.TryReadStruct<uint>(panel + Poe2.UiElement.Flags, out var fl)) return false;
+        return ((fl >> Poe2.UiElement.FlagVisibleBit) & 1) != 0;
     }
 
     /// <summary>True iff the element and all ancestors (via Parent +0xB8) have the local visible bit set

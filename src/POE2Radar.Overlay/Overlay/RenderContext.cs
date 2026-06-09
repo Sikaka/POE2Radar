@@ -25,6 +25,12 @@ public readonly record struct SelectedPath(int ColorSlot, IReadOnlyList<(int x, 
 /// RelativePos; the renderer projects them to screen via the atlas calibration (scale + offset).</summary>
 public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false);
 
+/// <summary>The tile-inspector tooltip: <see cref="X"/>/<see cref="Y"/> are the inspected node's
+/// canvas-space RelativePos (projected each frame like a mark, so it tracks pan/zoom); <see cref="Lines"/>
+/// are the readable fields to show (map name, content tags, biome/flags) so the user can see exactly what
+/// to type as a filter. Set by the inspect hotkey, drawn near the tile while the Atlas is open.</summary>
+public readonly record struct AtlasInspect(float X, float Y, IReadOnlyList<string> Lines);
+
 /// <summary>What the PoE2 renderer needs each frame. Built fresh by <see cref="RadarApp"/>.</summary>
 public sealed record RenderContext(
     bool InGame,
@@ -96,4 +102,6 @@ public sealed record RenderContext(
     float AtlasShearX = 0f,    // h1
     float AtlasShearY = 0f,    // h3
     float AtlasPersX = 0f,     // h6
-    float AtlasPersY = 0f);    // h7
+    float AtlasPersY = 0f,     // h7
+    // Tile-inspector tooltip (null = nothing to show). Drawn only while the Atlas is open.
+    AtlasInspect? AtlasInspect = null);

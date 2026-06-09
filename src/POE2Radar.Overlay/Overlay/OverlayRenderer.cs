@@ -103,6 +103,7 @@ public sealed class OverlayRenderer : IDisposable
                 // The Atlas screen is open: its overlay takes precedence — draw ONLY the atlas node
                 // highlights, never the world radar/minimap (which would be meaningless over the atlas).
                 DrawAtlas(rt, ctx);
+                DrawAtlasInspect(rt, ctx);                 // tile-inspector tooltip (F10)
                 _legendRowRects.Clear();
             }
             else if (ctx.Active && ctx.InGame)
@@ -189,6 +190,39 @@ public sealed class OverlayRenderer : IDisposable
         }
     }
 
+    /// <summary>The F10 tile-inspector tooltip: a small panel near the inspected tile listing its readable
+    /// fields (map name, content tags, biome, flags), so the user can see exactly what to type as a web-UI
+    /// filter. The tile's canvas relPos is projected with the same atlas transform as the rings, so the box
+    /// tracks pan/zoom. A cyan ring marks the inspected tile itself.</summary>
+    private void DrawAtlasInspect(ID2D1RenderTarget rt, RenderContext ctx)
+    {
+        if (ctx.AtlasInspect is not { Lines.Count: > 0 } ins) return;
+        float h0 = ctx.AtlasScale, h1 = ctx.AtlasShearX, h2 = ctx.AtlasOffX,
+              h3 = ctx.AtlasShearY, h4 = ctx.AtlasScaleY, h5 = ctx.AtlasOffY,
+              h6 = ctx.AtlasPersX, h7 = ctx.AtlasPersY;
+        var w = h6 * ins.X + h7 * ins.Y + 1f;
+        if (MathF.Abs(w) < 1e-6f) return;
+        var sx = (h0 * ins.X + h1 * ins.Y + h2) / w;
+        var sy = (h3 * ins.X + h4 * ins.Y + h5) / w;
+
+        var cyan = new Color4(0.235f, 0.86f, 1f, 1f);
+        // Mark the inspected tile.
+        _bStyle!.Color = cyan;
+        rt.DrawEllipse(new Ellipse(new NumVec2(sx, sy), 13f, 13f), _bStyle, 2.5f);
+
+        // Tooltip box, offset down-right of the tile, clamped on-screen.
+        const float lh = 16f, padX = 9f, padY = 7f, boxW = 250f;
+        float boxH = padY * 2f + lh * ins.Lines.Count;
+        float bx = Math.Clamp(sx + 16f, 0f, MathF.Max(0f, ctx.WindowWidth - boxW));
+        float by = Math.Clamp(sy + 14f, 0f, MathF.Max(0f, ctx.WindowHeight - boxH));
+        var box = new Vortice.RawRectF(bx, by, bx + boxW, by + boxH);
+        rt.FillRectangle(box, _bPanel!);
+        _bStyle.Color = cyan;
+        rt.DrawRectangle(box, _bStyle, 1.5f);
+        for (var i = 0; i < ins.Lines.Count; i++)
+            rt.DrawText(ins.Lines[i], _tf!, new Rect(bx + padX, by + padY + i * lh, bx + boxW - 4f, by + padY + (i + 1) * lh + 2f), _bText!, DrawTextOptions.Clip);
+    }
+
     /// <summary>Draw an edge arrow pointing from screen-centre toward an OFF-SCREEN atlas map (sx,sy), so
     /// you can pan toward high-value maps you can't zoom out far enough to see. Clamped to a screen-edge
     /// inset, coloured by the rule, labelled with the map/content.</summary>
@@ -219,10 +253,11 @@ public sealed class OverlayRenderer : IDisposable
 
     /// <summary>
     /// World-space HP bars over monsters, projected via the camera WorldToScreen matrix. Drawn whether
-    /// or not the big map is open (it's a heads-up combat overlay). Now driven by the unified ruleset:
-    /// a bar shows iff the entity's resolved display rule has <c>HpBar=true</c> (and isn't a Hide rule),
-    /// so friendly/hidden/normal-by-config mobs are handled by the same rules as their dots. The fill is
-    /// the rule's (dot) color; only the bar GEOMETRY (width/border/offset) stays per-rarity from HpBars.
+    /// or not the big map is open (it's a heads-up combat overlay). HP bars are a MONSTER-ONLY concept,
+    /// gated entirely by the per-rarity on/off toggles in Settings (HpBarNormal/Magic/Rare/Unique) — they
+    /// are NOT a display-rule concern. The resolved rule is still consulted for two things: it must not be
+    /// a Hide rule (no bars over hidden mobs), and the bar FILL follows the mob's dot color. Bar GEOMETRY
+    /// (width/border/offset) is per-rarity from HpBars.
     /// </summary>
     private void DrawNameplates(ID2D1RenderTarget rt, RenderContext ctx)
     {
@@ -233,10 +268,22 @@ public sealed class OverlayRenderer : IDisposable
         {
             if (!e.IsAlive || e.HpMax <= 0) continue; // needs a live HP pool
 
-            var rule = ctx.Resolve?.Invoke(e);
-            if (rule is null || rule.Hide || !rule.HpBar) continue;
+            // Per-rarity master toggle (Settings) — the sole on/off for monster HP bars. NonMonster
+            // rarities have no toggle ⇒ no bar.
+            var rarityOn = e.Rarity switch
+            {
+                Poe2Live.Rarity.Normal => ctx.HpBarNormal,
+                Poe2Live.Rarity.Magic  => ctx.HpBarMagic,
+                Poe2Live.Rarity.Rare   => ctx.HpBarRare,
+                Poe2Live.Rarity.Unique => ctx.HpBarUnique,
+                _                      => false,
+            };
+            if (!rarityOn) continue;
 
-            // Geometry per rarity (NonMonster → width 0 → skip); fill = the rule's dot color.
+            var rule = ctx.Resolve?.Invoke(e);
+            if (rule is null || rule.Hide) continue; // no bars over hidden mobs; fill follows the dot color
+
+            // Geometry per rarity; fill = the rule's dot color.
             var (bw, colorHex, borderW, borderHex) = e.Rarity switch
             {
                 Poe2Live.Rarity.Normal => (hb.WidthNormal, rule.Color, hb.BorderNormal, hb.BorderColorNormal),

@@ -323,8 +323,8 @@ public static class Poe2
     /// <c>screen = (UIscale × zoom) × relPos + offset</c>, where relPos = +0x118 (read live; the game
     /// rewrites it on PAN so pan is free), zoom = +0x130 (read live; ~0.85 max zoom-out → larger zoomed
     /// in), UIscale = winH/1600, offset ≈ factor×½icon ≈ (15,13) @ 1080p/zoom-0.85. NOT a perspective
-    /// homography. The overlay calibrates the offset once (F10/F11, scale+translate RANSAC) and rescales
-    /// the linear part by liveZoom/calibZoom each frame. <b>Recovery after a patch:</b> run
+    /// homography. The overlay derives the WHOLE projection live from the window height + live zoom
+    /// (RadarApp.AtlasProjection) — resolution-correct with no calibration. <b>Recovery after a patch:</b> run
     /// <c>POE2Radar.Research --atlas-probe</c> (Atlas map open) — it re-locates the class + canvas,
     /// validates every offset, and prints the derived projection. Only the node-class vtable drifts.
     /// See resources/atlas-research-notes.md "FULLY SOLVED".</para></summary>
@@ -337,6 +337,22 @@ public static class Poe2
         public const int Flags       = 0x32F; // (community) u8: bit0 unlocked, bit1 visited
         public const int Completion  = 0x339; // (community) u8 per-node completion id
         public const int ContentVec  = 0x350; // (community) StdVector begin (content list); End @ +0x358
+    }
+
+    /// <summary>Atlas screen panel — a PERSISTENT direct child of UiRoot (the element at
+    /// <c>InGameState+0x2F0</c>, walked via its Children StdVector <c>+0x10</c>) at <see cref="UiRootChildIndex"/>.
+    /// Present from a cold launch even when the atlas has NEVER been opened (✓ live 2026-06-08); its
+    /// UiElement visible bit (Flags <c>+0x180</c> bit <c>0x0B</c>) is the only thing that toggles when the
+    /// atlas opens/closes (closed flags 0x5626F5 → open 0x562EF5). This is the cheap atlas open-gate:
+    /// reading this one element's visible bit is ~4 reads, versus BFS-walking the ~50k-element UI tree to
+    /// (re)detect the node class — which while the atlas is closed can never succeed and so would burn that
+    /// BFS every retry. <b>If a patch shifts UiRoot's children this index drifts</b> — re-discover by
+    /// diffing the DevTree <c>/api/ui-flat</c> tree closed-vs-open (the element whose visible bit flips at
+    /// the shallowest stable path). <see cref="ExpectedChildCount"/> is a secondary signature (18 children).</summary>
+    public static class AtlasPanel
+    {
+        public const int UiRootChildIndex  = 22; // ✓ live 2026-06-08 — stable across a cold restart
+        public const int ExpectedChildCount = 18; // ✓ signature (panel had 18 children closed + open)
     }
 
     /// <summary>World hover tracker (community, 2026-06-07): <c>*(UiRoot+0x7D8)+0x630</c>; hovered entity
