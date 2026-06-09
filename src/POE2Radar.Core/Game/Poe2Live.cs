@@ -155,10 +155,11 @@ public sealed class Poe2Live
     /// <summary>Player grid position (from the Render component's world position ÷ grid ratio).</summary>
     public System.Numerics.Vector2? PlayerGrid(nint localPlayer) => EntityGrid(localPlayer);
 
-    public readonly record struct Vitals(int HpCur, int HpUnreserved, int ManaCur, int ManaUnreserved)
+    public readonly record struct Vitals(int HpCur, int HpUnreserved, int ManaCur, int ManaUnreserved, int EsCur, int EsUnreserved)
     {
         public float HpPct   => HpUnreserved   > 0 ? 100f * HpCur   / HpUnreserved   : 100f;
         public float ManaPct => ManaUnreserved > 0 ? 100f * ManaCur / ManaUnreserved : 100f;
+        public float EsPct   => EsUnreserved   > 0 ? 100f * EsCur   / EsUnreserved   : 100f;
     }
 
     private nint _plLife, _plLifeFor;
@@ -218,7 +219,8 @@ public sealed class Poe2Live
         EnsureVitalOffsets(_plLife);
         if (!_reader.TryReadStruct<VitalStruct>(_plLife + _healthOff, out var hp) || hp.Max <= 0) return null;
         _reader.TryReadStruct<VitalStruct>(_plLife + _manaOff, out var mana);
-        return new Vitals(hp.Current, Unreserved(hp), mana.Current, Unreserved(mana));
+        _reader.TryReadStruct<VitalStruct>(_plLife + Poe2.Life.EnergyShield, out var es);
+        return new Vitals(hp.Current, Unreserved(hp), mana.Current, Unreserved(mana), es.Current, Unreserved(es));
     }
 
     private static int Unreserved(VitalStruct v)

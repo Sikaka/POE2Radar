@@ -94,12 +94,15 @@ public sealed class RadarSettings
     // ── Auto-flask thresholds + per-flask cooldowns (milliseconds). ──
     public float LifeThresholdPct { get; set; } = 65f;
     public float ManaThresholdPct { get; set; } = 30f;
+    public float EsThresholdPct { get; set; } = 0f;
     public int LifeCooldownMs { get; set; } = 2500;
     public int ManaCooldownMs { get; set; } = 2000;
+    public int EsCooldownMs { get; set; } = 1000;
 
-    // ── Flask key codes (Win32 virtual-key). Defaults: '1' = life, '2' = mana. ──
+    // ── Flask key codes (Win32 virtual-key). Defaults: '1' = life, '2' = mana, '1' = ES. ──
     public int LifeKey { get; set; } = 0x31;
     public int ManaKey { get; set; } = 0x32;
+    public int EsKey { get; set; } = 0x31;
 
     // ── HTTP API. ──
     public int ApiPort { get; set; } = 7777;

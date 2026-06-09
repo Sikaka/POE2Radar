@@ -142,7 +142,7 @@ public sealed class ApiServer : IDisposable
                     areaName = ZoneGuide.Shared.FriendlyName(s.AreaCode),
                     areaAct = ZoneGuide.Shared.Area(s.AreaCode)?.Act ?? 0,
                     mapVisible = s.MapVisible, zoom = s.Zoom,
-                    hpPct = s.HpPct, manaPct = s.ManaPct, autoFlask = s.AutoFlask, flask = s.FlaskNote,
+                    hpPct = s.HpPct, manaPct = s.ManaPct, esPct = s.EsPct, autoFlask = s.AutoFlask, flask = s.FlaskNote,
                     player = new { x = s.Player.X, y = s.Player.Y },
                     entityCount = s.Entities.Count,
                     poiCount = s.Entities.Count(e => e.Poi),
@@ -449,10 +449,13 @@ public sealed class ApiServer : IDisposable
         offY = _settings.OffY,
         lifeThresholdPct = _settings.LifeThresholdPct,
         manaThresholdPct = _settings.ManaThresholdPct,
+        esThresholdPct = _settings.EsThresholdPct,
         lifeCooldownMs = _settings.LifeCooldownMs,
         manaCooldownMs = _settings.ManaCooldownMs,
+        esCooldownMs = _settings.EsCooldownMs,
         lifeKey = _settings.LifeKey,
         manaKey = _settings.ManaKey,
+        esKey = _settings.EsKey,
         apiPort = _settings.ApiPort, // display only — changing it needs a restart
         styles = _settings.Styles,   // per-item icon shapes/colors/sizes + mechanic overrides
         hpBars = _settings.HpBars,   // monster HP-bar geometry (width/height/offset)
@@ -491,10 +494,13 @@ public sealed class ApiServer : IDisposable
                 case "hpBarUnique" when TryBool(p.Value, out var b): _settings.HpBarUnique = b; applied.Add(p.Name); break;
                 case "lifeThresholdPct" when TryFloat(p.Value, out var f): _settings.LifeThresholdPct = Math.Clamp(f, 0f, 100f); applied.Add(p.Name); break;
                 case "manaThresholdPct" when TryFloat(p.Value, out var f): _settings.ManaThresholdPct = Math.Clamp(f, 0f, 100f); applied.Add(p.Name); break;
+                case "esThresholdPct" when TryFloat(p.Value, out var f): _settings.EsThresholdPct = Math.Clamp(f, 0f, 100f); applied.Add(p.Name); break;
                 case "lifeCooldownMs" when TryInt(p.Value, out var n): _settings.LifeCooldownMs = Math.Clamp(n, 0, 60000); applied.Add(p.Name); break;
                 case "manaCooldownMs" when TryInt(p.Value, out var n): _settings.ManaCooldownMs = Math.Clamp(n, 0, 60000); applied.Add(p.Name); break;
+                case "esCooldownMs" when TryInt(p.Value, out var n): _settings.EsCooldownMs = Math.Clamp(n, 0, 60000); applied.Add(p.Name); break;
                 case "lifeKey" when TryInt(p.Value, out var n): _settings.LifeKey = Math.Clamp(n, 1, 255); applied.Add(p.Name); break;
                 case "manaKey" when TryInt(p.Value, out var n): _settings.ManaKey = Math.Clamp(n, 1, 255); applied.Add(p.Name); break;
+                case "esKey" when TryInt(p.Value, out var n): _settings.EsKey = Math.Clamp(n, 1, 255); applied.Add(p.Name); break;
                 // Whole-object writes (the dashboard re-POSTs the full sub-object on edit). Parsed,
                 // sanitized/clamped, then swapped in. A malformed sub-object is skipped, not fatal.
                 case "styles" when p.Value.ValueKind == JsonValueKind.Object:
@@ -861,6 +867,7 @@ public sealed record RadarState(
     IReadOnlyList<Poe2Live.Landmark> Landmarks,
     float HpPct,
     float ManaPct,
+    float EsPct,
     bool AutoFlask,
     string FlaskNote,
     string AreaCode,
@@ -869,5 +876,5 @@ public sealed record RadarState(
 {
     public static readonly RadarState Empty =
         new(false, 0, 0, false, 0, System.Numerics.Vector2.Zero,
-            Array.Empty<Poe2Live.EntityDot>(), Array.Empty<Poe2Live.Landmark>(), 100, 100, false, "", "", "", 0);
+            Array.Empty<Poe2Live.EntityDot>(), Array.Empty<Poe2Live.Landmark>(), 100, 100, 100, false, "", "", "", 0);
 }
