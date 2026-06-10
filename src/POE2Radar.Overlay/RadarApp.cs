@@ -100,6 +100,7 @@ public sealed class RadarApp : IDisposable
     private DateTime _nextToggleAt = DateTime.MinValue;
     private DateTime _nextPathKeyAt = DateTime.MinValue;
     private DateTime _nextBrowserAt = DateTime.MinValue;
+    private DateTime _nextSettingsAt = DateTime.MinValue;
     private float _hpPct = 100f, _manaPct = 100f, _esPct = 100f;
     private string _flaskNote = "";
     private string _areaCode = "", _charName = "";
@@ -177,7 +178,10 @@ public sealed class RadarApp : IDisposable
                 {
                     _settings.NavMenuCorner = corner;
                     _settings.Save();
-                });
+                },
+                () => AddNearestPathTarget(),
+                () => ClearPathTargets(),
+                _settings);
             _imguiThread = new Thread(RunImGuiOverlayThread)
             {
                 IsBackground = true,
@@ -692,6 +696,14 @@ public sealed class RadarApp : IDisposable
         {
             _nextBrowserAt = DateTime.UtcNow.AddMilliseconds(800);
             OpenDashboard();
+        }
+
+        // F11 toggles the in-overlay settings panel (debounced).
+        if (Down(0x7A) && DateTime.UtcNow >= _nextSettingsAt
+            && _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd)
+        {
+            _nextSettingsAt = DateTime.UtcNow.AddMilliseconds(300);
+            _imguiOverlay?.ToggleSettings();
         }
 
         // F6 adds the nearest not-yet-selected landmark to the path selection; F7 clears it.
