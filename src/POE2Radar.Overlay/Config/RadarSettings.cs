@@ -30,8 +30,7 @@ public sealed class RadarSettings
     // The player position blip at map-center. Default on (prior behavior); some prefer it off.
     public bool ShowPlayerBlip { get; set; } = true;
 
-    // ── Overlay render/present rate (Hz). The overlay redraws + UpdateLayeredWindow-blits at this
-    //    rate; lower = less CPU/GPU tax on the game (the blit cost is proportional to resolution).
+    // ── Overlay render/present rate (Hz). Lower = less CPU/GPU tax on the game.
     //    60 is plenty smooth for a radar; raise toward your monitor's refresh if you prefer. The
     //    heavier entity/terrain walk stays fixed at ~30 Hz regardless. ──
     public int FpsCap { get; set; } = 60;
@@ -41,9 +40,6 @@ public sealed class RadarSettings
     public string NavMenuCorner { get; set; } = "TopLeft";
     // Developer/performance tuning aid: show compact timing/read counters in the nav menu.
     public bool ShowPerfStats { get; set; } = false;
-    // Overlay renderer backend. "LayeredD2D" is the legacy UpdateLayeredWindow path; "ImGuiDx"
-    // is the experimental GameHelper-style GPU/ImGui path.
-    public string OverlayBackend { get; set; } = "LayeredD2D";
 
     // ── Persistent auto-nav: substrings matched (case-insensitive Contains) against a navigation
     //    target's MatchKey (tile path / entity metadata). On every zone change, every target whose
@@ -335,8 +331,8 @@ public sealed class TerrainSettings
 }
 
 /// <summary>
-/// The full radar icon style table. Every default mirrors the formerly hardcoded values in
-/// <c>OverlayRenderer</c>, so a missing/partial config renders identically to before.
+/// The full radar icon style table. Every default mirrors the formerly hardcoded values,
+/// so a missing/partial config renders identically to before.
 /// </summary>
 public sealed class RadarStyles
 {

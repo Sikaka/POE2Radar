@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -27,10 +28,7 @@ public sealed class RadarApp : IDisposable
     private readonly MemoryReader _reader;
     private readonly Poe2Live _live;
     private readonly Poe2Atlas _atlas;
-    private OverlayWindow? _window;
-    private OverlayRenderer? _renderer;
     private ImGuiRadarOverlay? _imguiOverlay;
-    private bool _useImguiBackend;
     private Thread? _imguiThread;
     private readonly ApiServer _api;
     private readonly RadarSettings _settings;
@@ -109,13 +107,9 @@ public sealed class RadarApp : IDisposable
     private int _charLevel;
     private float[]? _cameraMatrix;
 
-    // Render inputs rebuilt at world rate (30 Hz), not per render frame: they only change with the
-    // selection / nav-target list. _overlayHadContent gates the present so we skip the (resolution-
-    // proportional) UpdateLayeredWindow blit while PoE2 isn't foreground — but still push ONE blank
-    // frame on focus-loss so a stale overlay never lingers over other apps.
+    // Render inputs rebuilt at world rate (30 Hz), not per render frame.
     private List<string> _selectedSnapshot = new();
     private IReadOnlyList<LegendEntry> _legend = Array.Empty<LegendEntry>();
-    private bool _overlayHadContent;
 
     // ── Phase 1: exploration fog + draw-only path guidance (all gated by RadarSettings flags). ──
     // Unified navigation targets: a single list built each world tick from BOTH terrain-tile
@@ -128,10 +122,11 @@ public sealed class RadarApp : IDisposable
     // targets in the new zone.
     private const int AddNearestVk = 0x75; // F6
     private const int ClearPathsVk = 0x76; // F7
-    private const int MaxSelectedTargets = 8; // == OverlayRenderer.PathPalette.Length
+    private const int MaxSelectedTargets = 8;
     // Background A* replanner (single reused PathPlanner on a worker thread) + one RouteTracker per
     // selected id. The tick thread does only CHEAP per-tick maintenance (cursor advance) and rebuilds
     // _selectedPaths from the trackers; the worker owns all A*. See BackgroundReplanner / RouteTracker.
+    private readonly ConcurrentQueue<Action> _commandQueue = new();
     private readonly BackgroundReplanner _replanner = new();
     private readonly Dictionary<string, RouteTracker> _trackers = new(); // one per selected id; OWNED by the tick thread
     private List<NavTarget> _navTargets = new();                         // unified targets, rebuilt each world tick
@@ -158,11 +153,8 @@ public sealed class RadarApp : IDisposable
     private uint _selectionAreaHash;
     private const int MaxRememberedZones = 64;
     private const int MaxTargetSnapshots = 512;
-    private int OverlayWidth => _useImguiBackend ? _imguiOverlay?.OverlayWidth ?? 0 : _window?.Width ?? 0;
-    private int OverlayHeight => _useImguiBackend ? _imguiOverlay?.OverlayHeight ?? 0 : _window?.Height ?? 0;
-
-    // ── Collapsible "POE2Radar" navigation menu widget state (drawn always-on; persisted corner). ──
-    private bool _navMenuExpanded;                                       // dropdown open? (default collapsed)
+    private int OverlayWidth => _imguiOverlay?.OverlayWidth ?? 0;
+    private int OverlayHeight => _imguiOverlay?.OverlayHeight ?? 0;
 
     public void RequestShutdown() => _shutdown = true;
 
@@ -175,34 +167,31 @@ public sealed class RadarApp : IDisposable
         Console.WriteLine($"Entity names: {EntityNameResolver.Shared.Count} mappings; zones: {ZoneGuide.Shared.Count}");
         _live = new Poe2Live(reader, gameStateSlot);
         _atlas = new Poe2Atlas(reader);
-        _useImguiBackend = string.Equals(_settings.OverlayBackend, "ImGuiDx", StringComparison.OrdinalIgnoreCase);
-        if (_useImguiBackend)
+        CrashLog.Write("Backend selected", "Starting ImGuiDx backend.");
+        try
         {
-            try
-            {
-                CrashLog.Write("Backend selected", "Starting ImGuiDx backend.");
-                _imguiOverlay = new ImGuiRadarOverlay();
-                _imguiThread = new Thread(RunImGuiOverlayThread)
+            _imguiOverlay = new ImGuiRadarOverlay(
+                cmd => _commandQueue.Enqueue(cmd),
+                id => TogglePathTarget(id),
+                corner =>
                 {
-                    IsBackground = true,
-                    Name = "POE2Radar ImGuiDx",
-                };
-                _imguiThread.SetApartmentState(ApartmentState.STA);
-                _imguiThread.Start();
-                Console.WriteLine("Overlay backend: ImGuiDx experimental (GPU draw lists; legacy D2D disabled).");
-            }
-            catch (Exception ex)
+                    _settings.NavMenuCorner = corner;
+                    _settings.Save();
+                });
+            _imguiThread = new Thread(RunImGuiOverlayThread)
             {
-                CrashLog.Write("ImGuiDx backend startup failed; falling back to LayeredD2D", ex);
-                _useImguiBackend = false;
-                _imguiOverlay = null;
-                StartLayeredBackend();
-            }
+                IsBackground = true,
+                Name = "POE2Radar ImGuiDx",
+            };
+            _imguiThread.SetApartmentState(ApartmentState.STA);
+            _imguiThread.Start();
+            Console.WriteLine("Overlay backend: ImGuiDx (GPU draw lists).");
         }
-        else
+        catch (Exception ex)
         {
-            CrashLog.Write("Backend selected", "Starting LayeredD2D backend.");
-            StartLayeredBackend();
+            CrashLog.Write("ImGuiDx backend startup failed", ex);
+            Console.Error.WriteLine("FATAL: ImGuiDx backend failed to start. Exiting.");
+            Environment.Exit(1);
         }
         _hidden = new HiddenEntities(Path.Combine(ConfigDir, "hidden_entities.json"));
         _watched = new WatchedEntities(Path.Combine(ConfigDir, "watched_entities.json"));
@@ -292,16 +281,6 @@ public sealed class RadarApp : IDisposable
         });
     }
 
-    private void StartLayeredBackend()
-    {
-        _window = OverlayWindow.Create();
-        _renderer = new OverlayRenderer(_window);
-        // Clicking a legend row toggles that landmark in the path selection. Purely local UI — the
-        // click lands on our own overlay window (never forwarded to the game). See UpdateClickThrough.
-        _window.OnClientClick = OnOverlayClick;
-        Console.WriteLine("Overlay backend: LayeredD2D (legacy UpdateLayeredWindow).");
-    }
-
     private void RunImGuiOverlayThread()
     {
         try
@@ -343,11 +322,7 @@ public sealed class RadarApp : IDisposable
             var frameStart = Stopwatch.GetTimestamp();
             if (_gameHwnd == 0) _gameHwnd = OverlayNative.FindWindowForProcess(_process.ProcessId);
             if (_gameHwnd != 0)
-            {
-                if (_useImguiBackend) TrackImGuiGameWindow(_gameHwnd);
-                else _window!.TrackGameWindow(_gameHwnd);
-            }
-            if (!_useImguiBackend && !_window!.PumpMessages()) break;
+                TrackImGuiGameWindow(_gameHwnd);
             Tick();
             // Configurable frame budget (read live so dashboard edits apply immediately). The world
             // walk is independently throttled to WorldHz inside Tick().
@@ -374,6 +349,8 @@ public sealed class RadarApp : IDisposable
     {
         var tickStart = Stopwatch.GetTimestamp();
         double worldMs = 0, entitiesMs = 0, hpBarsMs = 0;
+
+        while (_commandQueue.TryDequeue(out var action)) action();
 
         HandleHotkeys();
 
@@ -552,7 +529,7 @@ public sealed class RadarApp : IDisposable
             SelectedPaths: _selectedPaths,
             IsSelected: _selectedSnapshot.Contains,
             Legend: _legend,
-            NavMenuExpanded: _navMenuExpanded,
+            NavMenuExpanded: false,
             NavMenuCorner: _settings.NavMenuCorner,
             ShowPerfStats: _settings.ShowPerfStats,
             Perf: _perfSnapshot,
@@ -582,36 +559,8 @@ public sealed class RadarApp : IDisposable
         // The overlay is only visible while PoE2 is foreground (Render draws nothing otherwise). Skip
         // the whole draw + UpdateLayeredWindow blit when unfocused — but render once on the focus-loss
         // transition so the last visible frame is cleared rather than left frozen on screen.
-        if (_useImguiBackend)
-        {
-            _imguiOverlay?.UpdateContext(ctx);
-            _perf.RecordRender(0, 0, 0, 0, 0, 0, 0);
-            _overlayHadContent = ctx.Active;
-        }
-        else if (ctx.Active || _overlayHadContent)
-        {
-            _renderer!.Render(ctx);
-            _perf.RecordRender(
-                _renderer.LastDrawMs,
-                _renderer.LastPresentMs,
-                _renderer.LastNameplatesMs,
-                _renderer.LastMapMs,
-                _renderer.LastPathsMs,
-                _renderer.LastNavMenuMs,
-                _renderer.LastAtlasMs);
-            _overlayHadContent = ctx.Active;
-        }
-        else
-        {
-            _perf.RecordRender(0, 0, 0, 0, 0, 0, 0);
-        }
-
-        // Make the overlay grab clicks only while the cursor is over a clickable legend row;
-        // otherwise stay click-through so the game receives the clicks. Runs after Render so
-        // LegendRowRects reflects the frame just drawn. Gate on REAL focus (never grab clicks when
-        // PoE2 isn't foreground, even if "always show overlay" is keeping it drawn).
-        if (!_useImguiBackend)
-            UpdateClickThrough(realActive);
+        _imguiOverlay?.UpdateContext(ctx);
+        _perf.RecordRender(0, 0, 0, 0, 0, 0, 0);
 
         _perfSnapshot = _perf.RecordFrame(
             tickMs: ElapsedMs(tickStart),
@@ -628,71 +577,6 @@ public sealed class RadarApp : IDisposable
 
     private static double ElapsedMs(long start)
         => Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-
-    /// <summary>
-    /// Per-frame click-through toggle. The overlay captures clicks (click-through OFF) only while the
-    /// overlay is active (PoE2 foreground) AND the cursor is currently over a legend row. In every
-    /// other case — overlay hidden, PoE2 not foreground, or the map closed (legend empty) — it stays
-    /// click-through so we never eat the user's game clicks. Reads only the cursor; sends nothing.
-    /// </summary>
-    private void UpdateClickThrough(bool active)
-    {
-        var overWidget = active
-                         && _renderer!.LegendRowRects.Count > 0
-                         && OverlayNative.GetCursorPos(out var pt)
-                         && HitTestWidget(ScreenToClientPoint(pt)) is not null;
-        _window!.SetClickThrough(!overWidget);
-    }
-
-    /// <summary>Convert a screen-space cursor point to the overlay window's client coords.</summary>
-    private (int X, int Y) ScreenToClientPoint(OverlayNative.POINT screen)
-    {
-        var p = screen;
-        OverlayNative.ScreenToClient(_window!.Handle, ref p);
-        return (p.X, p.Y);
-    }
-
-    /// <summary>
-    /// Hit-test a client-space point against the renderer's navigation-menu rects. Returns the
-    /// matched Action string (e.g. "menu-toggle", "corner:TopRight", "target:e:123") or null if the
-    /// point is over no widget rect. LegendRowRects are in overlay client pixels (D2D renders at
-    /// 96 DPI into a DIB sized to the game window's physical client rect, so 1 DIP == 1 device
-    /// pixel == 1 client pixel), the same space ScreenToClient yields.
-    /// </summary>
-    private string? HitTestWidget((int X, int Y) p)
-    {
-        foreach (var (rect, action) in _renderer!.LegendRowRects)
-            if (p.X >= rect.Left && p.X < rect.Right && p.Y >= rect.Top && p.Y < rect.Bottom)
-                return action;
-        return null;
-    }
-
-    /// <summary>
-    /// WM_LBUTTONDOWN handler (wired to <see cref="OverlayWindow.OnClientClick"/>): dispatch the
-    /// click on the navigation-menu widget. "menu-toggle" flips the dropdown; "corner:X" pins the
-    /// widget to that screen corner (persisted); "target:&lt;id&gt;" toggles that nav target's selection.
-    /// Client coords arrive directly from the window, in the same space as LegendRowRects. Purely
-    /// local UI — nothing is ever sent to the game.
-    /// </summary>
-    private void OnOverlayClick(int clientX, int clientY)
-    {
-        var action = HitTestWidget((clientX, clientY));
-        if (action is null) return;
-
-        if (action == "menu-toggle")
-        {
-            _navMenuExpanded = !_navMenuExpanded;
-        }
-        else if (action.StartsWith("corner:", StringComparison.Ordinal))
-        {
-            _settings.NavMenuCorner = action.Substring("corner:".Length);
-            _settings.Save();
-        }
-        else if (action.StartsWith("target:", StringComparison.Ordinal))
-        {
-            TogglePathTarget(action.Substring("target:".Length));
-        }
-    }
 
     /// <summary>Decide which monsters get an HP bar and precompute each bar's style (width + packed
     /// fill/border colours) at WORLD rate. This is the work that used to run per entity per render frame in
@@ -1825,7 +1709,5 @@ public sealed class RadarApp : IDisposable
         _api.Dispose();
         _imguiOverlay?.RequestClose();
         try { _imguiThread?.Join(1000); } catch { }
-        _renderer?.Dispose();
-        _window?.Dispose();
     }
 }

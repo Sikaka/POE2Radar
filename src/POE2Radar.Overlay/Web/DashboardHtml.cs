@@ -491,8 +491,6 @@ internal static class DashboardHtml
               <input class="numin" type="number" step="1" min="15" max="360" data-set="fpsCap"></div>
             <div class="row"><div class="rl">Show perf stats<small>compact FPS/read/render timings in the nav menu</small></div>
               <label class="sw"><input type="checkbox" data-set="showPerfStats"><span class="track"></span><span class="knob"></span></label></div>
-            <div class="row"><div class="rl">Overlay backend<small>ImGuiDx is experimental and applies after restart</small></div>
-              <select class="numin" data-set="overlayBackend"><option>LayeredD2D</option><option>ImGuiDx</option></select></div>
           </div>
           <div class="card">
             <h3>Monster HP Bars <span class="tag">&middot; by rarity</span></h3>

@@ -442,7 +442,6 @@ public sealed class ApiServer : IDisposable
         showPlayerBlip = _settings.ShowPlayerBlip,
         fpsCap = _settings.FpsCap,
         showPerfStats = _settings.ShowPerfStats,
-        overlayBackend = _settings.OverlayBackend,
         hpBarNormal = _settings.HpBarNormal,
         hpBarMagic = _settings.HpBarMagic,
         hpBarRare = _settings.HpBarRare,
@@ -491,9 +490,6 @@ public sealed class ApiServer : IDisposable
                 case "showPlayerBlip" when TryBool(p.Value, out var b): _settings.ShowPlayerBlip = b; applied.Add(p.Name); break;
                 case "fpsCap" when TryInt(p.Value, out var n): _settings.FpsCap = Math.Clamp(n, 15, 360); applied.Add(p.Name); break;
                 case "showPerfStats" when TryBool(p.Value, out var b): _settings.ShowPerfStats = b; applied.Add(p.Name); break;
-                case "overlayBackend" when p.Value.ValueKind == JsonValueKind.String
-                    && p.Value.GetString() is { } backend
-                    && (backend is "LayeredD2D" or "ImGuiDx"): _settings.OverlayBackend = backend; applied.Add(p.Name); break;
                 case "hpBarNormal" when TryBool(p.Value, out var b): _settings.HpBarNormal = b; applied.Add(p.Name); break;
                 case "hpBarMagic" when TryBool(p.Value, out var b): _settings.HpBarMagic = b; applied.Add(p.Name); break;
                 case "hpBarRare" when TryBool(p.Value, out var b): _settings.HpBarRare = b; applied.Add(p.Name); break;
