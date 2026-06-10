@@ -985,17 +985,19 @@ public sealed class RadarApp : IDisposable
                     if (!_selectedIds.Contains(id)) _selectedIds.Add(id);
                 }
             }
-            else
+            else if (_settings.AutoPathNavigable)
             {
-                // First visit to this instance: auto-select every target whose display rule opted into
-                // auto-pathing (the per-rule "Auto-path" flag), capped so colors/planning stay bounded.
-                foreach (var t in _navTargets)
+                // First visit to this instance with auto-path on: seed the nearest navigation targets so
+                // routes appear immediately (the per-tick AutoSelectNavigable keeps them reconciled after).
+                foreach (var id in _navTargets
+                             .OrderBy(t => NumVec2.DistanceSquared(t.Grid, _state.Player))
+                             .Select(t => t.Id))
                 {
                     if (_selectedIds.Count >= MaxSelectedTargets) break;
-                    if (t.AutoPath && !_selectedIds.Contains(t.Id))
+                    if (!_selectedIds.Contains(id))
                     {
-                        _selectedIds.Add(t.Id);
-                        if (_settings.AutoPathNavigable) _autoSelectedIds.Add(t.Id);
+                        _selectedIds.Add(id);
+                        _autoSelectedIds.Add(id);
                     }
                 }
             }
@@ -1037,8 +1039,11 @@ public sealed class RadarApp : IDisposable
     }
 
     /// <summary>When <see cref="RadarSettings.AutoPathNavigable"/> is on, keep the selection filled with
-    /// nearest Auto-path-flagged targets (up to the cap). Manual selections (F6/legend/API) are preserved;
-    /// ids the user removed stay out until they leave and re-enter the navigable set.</summary>
+    /// the NEAREST navigation targets (up to the cap). The candidate set is every nav target — which by
+    /// construction is already the "navigation-worthy" set: game POIs, tile landmarks/transitions, unique
+    /// monsters, and any entity type a display rule flags Auto-path (which is what lets those extra types
+    /// enter <see cref="BuildNavTargets"/> at all). Manual selections (F6/legend/API) are preserved; ids
+    /// the user removed stay out until they leave and re-enter the navigable set.</summary>
     private void AutoSelectNavigable(NumVec2 player)
     {
         if (!_settings.AutoPathNavigable)
@@ -1054,7 +1059,6 @@ public sealed class RadarApp : IDisposable
         }
 
         var candidates = _navTargets
-            .Where(t => t.AutoPath)
             .OrderBy(t => NumVec2.DistanceSquared(t.Grid, player))
             .Select(t => t.Id)
             .ToList();

@@ -775,13 +775,13 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                 ImGui.SetTooltip("Max grid distance from player for entity dots, nav targets, and API list. 0 = no limit.");
 
             bool ap = s.AutoPathNavigable;
-            if (ImGui.Checkbox("Auto-path to flagged entities", ref ap))
+            if (ImGui.Checkbox("Auto-path to nearest targets", ref ap))
             {
                 s.AutoPathNavigable = ap;
                 if (ap) s.ShowPath = true;
             }
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort))
-                ImGui.SetTooltip("Continuously path to nearest targets whose display rule has Auto-path enabled (web dashboard or display_rules.json). Manual F6/legend picks are preserved.");
+                ImGui.SetTooltip("Continuously draw paths to the nearest navigation targets (game POIs, transitions/landmarks, unique monsters, plus any entity type whose rule has 'Nav' enabled below). Replaces cycling with F6/F7; manual picks are preserved.");
         }
 
         if (_displayRules is null)
@@ -800,13 +800,15 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
             }
 
             ImGui.TextDisabled("Advanced matchers / reorder: web dashboard (F12) or display_rules.json");
-            ImGui.BeginChild("EntityRulesList", new NumVec2(0, 180));
+            ImGui.BeginChild("EntityRulesList", new NumVec2(0, 220));
 
             for (var i = 0; i < _rulesUiCache.Count; i++)
             {
                 var rule = _rulesUiCache[i];
                 ImGui.PushID(i);
 
+                // Controls first at fixed positions so long rule names (placed last) can overflow
+                // harmlessly without pushing the interactive widgets off the right edge.
                 bool en = rule.Enabled;
                 if (ImGui.Checkbox("##en", ref en) && en != rule.Enabled)
                 {
@@ -814,55 +816,60 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                     c.Enabled = en;
                     _displayRules.Update(i, c);
                 }
-                ImGui.SameLine();
-                ImGui.TextUnformatted(rule.Name.Length > 0 ? rule.Name : $"Rule {i}");
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort)) ImGui.SetTooltip("Enable / disable this rule");
 
-                bool hide = rule.Hide;
                 ImGui.SameLine();
-                if (ImGui.Checkbox("Hide", ref hide) && hide != rule.Hide)
+                bool hide = rule.Hide;
+                if (ImGui.Checkbox("H##hide", ref hide) && hide != rule.Hide)
                 {
                     var c = CloneDisplayRule(rule);
                     c.Hide = hide;
                     _displayRules.Update(i, c);
                 }
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort)) ImGui.SetTooltip("Hide: matching entities are not drawn");
+
+                ImGui.SameLine();
+                bool nav = rule.Navigable;
+                if (ImGui.Checkbox("Nav##nav", ref nav) && nav != rule.Navigable)
+                {
+                    var c = CloneDisplayRule(rule);
+                    c.Navigable = nav;
+                    _displayRules.Update(i, c);
+                }
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort)) ImGui.SetTooltip("Nav: add this entity type to the navigation-target set, so 'Auto-path to nearest targets' (and F6) will route to them");
 
                 var col = ParseHexColor(rule.Color);
                 ImGui.SameLine();
-                if (ImGui.ColorEdit3("##col", ref col, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel))
+                if (ImGui.ColorEdit3("##col", ref col, ImGuiColorEditFlags.NoInputs))
                 {
                     var c = CloneDisplayRule(rule);
                     c.Color = FormatHexColor3(col);
                     _displayRules.Update(i, c);
                 }
 
+                // Opacity / size: mutate the shared rule object live (the renderer reads these action
+                // fields off the resolved rule object each frame), but only persist + recompile on
+                // release so a drag doesn't rewrite display_rules.json every frame.
                 float op = rule.Opacity;
                 ImGui.SameLine();
-                ImGui.SetNextItemWidth(72f);
-                if (ImGui.DragFloat("##op", ref op, 0.01f, 0f, 1f, "α%.2f") && MathF.Abs(op - rule.Opacity) > 0.0001f)
-                {
-                    var c = CloneDisplayRule(rule);
-                    c.Opacity = op;
-                    _displayRules.Update(i, c);
-                }
+                ImGui.SetNextItemWidth(58f);
+                if (ImGui.DragFloat("##op", ref op, 0.01f, 0f, 1f, "a%.2f"))
+                    rule.Opacity = Math.Clamp(op, 0f, 1f);
+                if (ImGui.IsItemDeactivatedAfterEdit())
+                    _displayRules.Update(i, CloneDisplayRule(rule));
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort)) ImGui.SetTooltip("Opacity (0-1)");
 
                 float sz = rule.Size;
                 ImGui.SameLine();
-                ImGui.SetNextItemWidth(72f);
-                if (ImGui.DragFloat("##sz", ref sz, 0.1f, 1f, 24f, "sz%.1f") && MathF.Abs(sz - rule.Size) > 0.0001f)
-                {
-                    var c = CloneDisplayRule(rule);
-                    c.Size = sz;
-                    _displayRules.Update(i, c);
-                }
+                ImGui.SetNextItemWidth(58f);
+                if (ImGui.DragFloat("##sz", ref sz, 0.1f, 1f, 24f, "sz%.1f"))
+                    rule.Size = Math.Clamp(sz, 1f, 24f);
+                if (ImGui.IsItemDeactivatedAfterEdit())
+                    _displayRules.Update(i, CloneDisplayRule(rule));
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort)) ImGui.SetTooltip("Icon size (px)");
 
-                bool nav = rule.Navigable;
                 ImGui.SameLine();
-                if (ImGui.Checkbox("Auto-path", ref nav) && nav != rule.Navigable)
-                {
-                    var c = CloneDisplayRule(rule);
-                    c.Navigable = nav;
-                    _displayRules.Update(i, c);
-                }
+                ImGui.TextUnformatted(rule.Name.Length > 0 ? rule.Name : $"Rule {i}");
 
                 ImGui.PopID();
             }
