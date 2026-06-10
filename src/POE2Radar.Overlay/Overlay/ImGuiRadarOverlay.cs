@@ -318,21 +318,61 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
         var bytesPerRow = terrain.Width;
         if (data.Length == 0 || bytesPerRow <= 0) return;
 
+        var edgeCol = ColorU32(ctx.TerrainStyle.EdgeColor, ctx.TerrainStyle.EdgeOpacity);
+        var interiorCol = ColorU32(ctx.TerrainStyle.InteriorColor, ctx.TerrainStyle.InteriorOpacity);
         var rows = data.Length / bytesPerRow;
-        var stride = Math.Max(1, Math.Min(6, (int)MathF.Ceiling(1.5f / MathF.Max(scale, 0.05f))));
-        var col = ColorU32(46, 209, 242, 0.55f);
-        for (var y = 1; y < rows - 1; y += stride)
+        var W = ctx.WindowWidth;
+        var H = ctx.WindowHeight;
+
+        var edgeStride = Math.Max(1, (int)MathF.Ceiling(0.8f / MathF.Max(scale, 0.15f)));
+        if (edgeStride > 3) edgeStride = 3;
+        var thickness = Math.Clamp(1.2f * scale, 0.8f, 4f);
+
+        var interiorStride = Math.Max(2, edgeStride * 3);
+
+        for (var y = 1; y < rows - 2; y += edgeStride)
         {
             var row = y * bytesPerRow;
-            for (var x = 1; x < bytesPerRow - 1; x += stride)
+            for (var x = 1; x < bytesPerRow - 2; x += edgeStride)
             {
                 var idx = row + x;
                 if (idx < 0 || idx >= data.Length || data[idx] == 0) continue;
-                if (data[idx - 1] != 0 && data[idx + 1] != 0 && data[idx - bytesPerRow] != 0 && data[idx + bytesPerRow] != 0)
-                    continue;
+
+                var isEdge = data[idx - 1] == 0 || data[idx + 1] == 0
+                          || data[idx - bytesPerRow] == 0 || data[idx + bytesPerRow] == 0;
+
                 var p = Project(new NumVec2(x, y), ctx.PlayerGrid, center, scale);
-                if (p.X < -4 || p.Y < -4 || p.X > ctx.WindowWidth + 4 || p.Y > ctx.WindowHeight + 4) continue;
-                dl.AddCircleFilled(p, 1.25f, col, 6);
+                if (p.X < -8 || p.Y < -8 || p.X > W + 8 || p.Y > H + 8) continue;
+
+                if (isEdge)
+                {
+                    if (x + edgeStride < bytesPerRow - 1)
+                    {
+                        var rightIdx = row + x + edgeStride;
+                        if (rightIdx < data.Length && data[rightIdx] != 0)
+                        {
+                            var pr = Project(new NumVec2(x + edgeStride, y), ctx.PlayerGrid, center, scale);
+                            if (MathF.Abs(pr.X - p.X) < 80f && MathF.Abs(pr.Y - p.Y) < 80f)
+                                dl.AddLine(p, pr, edgeCol, thickness);
+                        }
+                    }
+
+                    if (y + edgeStride < rows - 1)
+                    {
+                        var bottomIdx = (y + edgeStride) * bytesPerRow + x;
+                        if (bottomIdx < data.Length && data[bottomIdx] != 0)
+                        {
+                            var pb = Project(new NumVec2(x, y + edgeStride), ctx.PlayerGrid, center, scale);
+                            if (MathF.Abs(pb.X - p.X) < 80f && MathF.Abs(pb.Y - p.Y) < 80f)
+                                dl.AddLine(p, pb, edgeCol, thickness);
+                        }
+                    }
+                }
+                else if (y % interiorStride == 0 && x % interiorStride == 0 && scale > 0.15f
+                         && ctx.TerrainStyle.InteriorOpacity > 0.01f)
+                {
+                    dl.AddCircleFilled(p, Math.Clamp(1.2f * scale, 0.6f, 2.5f), interiorCol, 4);
+                }
             }
         }
     }
