@@ -13,14 +13,21 @@ namespace POE2Radar.Overlay;
 /// </summary>
 public readonly record struct NavTarget(string Id, string Name, NumVec2 Grid, string MatchKey, bool IsEntity, bool AutoPath = false);
 
+/// <summary>How fresh a selected navigation target is for display purposes.</summary>
+public enum NavTargetStatus { Live, Cached, NoPath }
+
 /// <summary>One legend row: a navigation target, the selection-order color slot it draws in (0..7, or
-/// -1 when unselected), and whether it is currently selected (its own A* route is drawn).</summary>
-public readonly record struct LegendEntry(NavTarget Target, int ColorSlot, bool IsSelected);
+/// -1 when unselected), whether it is currently selected, its route freshness, and current grid
+/// distance from the player (-1 when unknown).</summary>
+public readonly record struct LegendEntry(
+    NavTarget Target, int ColorSlot, bool IsSelected, NavTargetStatus Status, float Distance);
 
 /// <summary>One selected target's smoothed A* route: the selection-order color slot (0..7) used to pick
-/// its draw/legend color, the target id/label to show at the destination, and the smoothed grid-cell
-/// waypoints. Empty <see cref="Points"/> = no path.</summary>
-public readonly record struct SelectedPath(int ColorSlot, string TargetId, string Label, IReadOnlyList<(int x, int y)> Points);
+/// its draw/legend color, target identity/status metadata, and the smoothed grid-cell waypoints.
+/// Empty <see cref="Points"/> = no path.</summary>
+public readonly record struct SelectedPath(
+    int ColorSlot, string TargetId, string Label, bool IsEntity, NavTargetStatus Status, float Distance,
+    IReadOnlyList<(int x, int y)> Points);
 
 /// <summary>A monster HP bar to draw, with everything expensive already decided at world rate: the style
 /// (width + packed 0xAARRGGBB fill/border colors) was resolved once when the entity set was built; only

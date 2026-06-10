@@ -130,6 +130,7 @@ public sealed class RadarApp : IDisposable
     private List<NavTarget> _navTargets = new();                         // unified targets, rebuilt each world tick
     private readonly record struct TargetSnapshot(string Label, NumVec2 Grid, bool IsEntity, DateTime LastSeenUtc);
     private readonly record struct TargetSnapshotKey(uint AreaHash, string TargetId);
+    private readonly record struct TargetRenderInfo(string Id, string Label, NumVec2 Grid, bool IsEntity, NavTargetStatus Status);
     private readonly object _targetSnapshotLock = new();
     private readonly Dictionary<TargetSnapshotKey, TargetSnapshot> _targetSnapshots = new();
     // The ONLY state shared with the HTTP/API thread. Every read/iterate/mutate of _selectedIds is
@@ -395,7 +396,7 @@ public sealed class RadarApp : IDisposable
                 // Selection snapshot + legend are render inputs that change only with the selection /
                 // nav-target list — rebuild them here (30 Hz) rather than every render frame.
                 _selectedSnapshot = SnapshotSelection();
-                _legend = BuildLegend(_selectedSnapshot);
+                _legend = BuildLegend(_selectedSnapshot, player);
             }
 
             // EVERY render frame (not just world ticks): refresh the live position + HP of each HP-bar mob
@@ -1071,19 +1072,20 @@ public sealed class RadarApp : IDisposable
     }
 
     /// <summary>
-    /// Resolve ANY selected id to its current goal grid against the live world (not just the curated
-    /// <see cref="_navTargets"/> menu), so the dashboard can navigate to any entity/landmark:
-    /// <list type="bullet">
-    /// <item>"t:&lt;path&gt;" → the landmark in <see cref="_landmarks"/> whose Path matches; grid = Center.</item>
-    /// <item>"e:&lt;id&gt;" → the entity in <see cref="_entities"/> whose Id matches; grid = Grid.</item>
-    /// </list>
-    /// If the live target is absent this tick (out of read range / temporarily despawned), falls back
-    /// to the cached last-known grid so the already-selected route keeps drawing.
+    /// Resolve ANY selected id to display/planning info. Live targets win; cached last-known targets
+    /// keep selected entity routes readable/drawable after they leave read range.
     /// </summary>
-    private bool TryResolveTargetGrid(string id, out NumVec2 grid)
+    private bool TryResolveTargetInfo(string id, out TargetRenderInfo info)
     {
-        grid = default;
+        info = default;
         if (string.IsNullOrEmpty(id) || id.Length < 2) return false;
+
+        foreach (var t in _navTargets)
+        {
+            if (t.Id != id) continue;
+            info = new TargetRenderInfo(id, t.Name, t.Grid, t.IsEntity, NavTargetStatus.Live);
+            return true;
+        }
 
         if (id.StartsWith("t:", StringComparison.Ordinal))
         {
@@ -1091,31 +1093,42 @@ public sealed class RadarApp : IDisposable
             foreach (var lm in _landmarks)
             {
                 if (lm.Key != key) continue;
-                grid = lm.Center;
-                RememberTargetSnapshot(id, LandmarkLabel(lm), grid, isEntity: false);
+                var label = LandmarkLabel(lm);
+                RememberTargetSnapshot(id, label, lm.Center, isEntity: false);
+                info = new TargetRenderInfo(id, label, lm.Center, IsEntity: false, NavTargetStatus.Live);
                 return true;
             }
         }
-        else if (id.StartsWith("e:", StringComparison.Ordinal))
+        else if (id.StartsWith("e:", StringComparison.Ordinal) && uint.TryParse(id[2..], out var entityId))
         {
-            if (uint.TryParse(id[2..], out var entityId))
+            foreach (var e in _entities)
             {
-                foreach (var e in _entities)
-                {
-                    if (e.Id != entityId) continue;
-                    grid = e.Grid;
-                    RememberTargetSnapshot(id, EntityLabel(e.Metadata), grid, isEntity: true);
-                    return true;
-                }
+                if (e.Id != entityId) continue;
+                var label = EntityLabel(e.Metadata);
+                RememberTargetSnapshot(id, label, e.Grid, isEntity: true);
+                info = new TargetRenderInfo(id, label, e.Grid, IsEntity: true, NavTargetStatus.Live);
+                return true;
             }
         }
 
         if (TryGetTargetSnapshot(id, out var cached))
         {
-            grid = cached.Grid;
+            info = new TargetRenderInfo(id, cached.Label, cached.Grid, cached.IsEntity, NavTargetStatus.Cached);
             return true;
         }
 
+        return false;
+    }
+
+    private bool TryResolveTargetGrid(string id, out NumVec2 grid)
+    {
+        if (TryResolveTargetInfo(id, out var info))
+        {
+            grid = info.Grid;
+            return true;
+        }
+
+        grid = default;
         return false;
     }
 
@@ -1157,7 +1170,7 @@ public sealed class RadarApp : IDisposable
         }
 
         // (d) Cheap rebuild of the draw list from each tracker's current (cursor-advanced) points.
-        RebuildSelectedPaths(selected);
+        RebuildSelectedPaths(selected, player);
     }
 
     /// <summary>Snapshot the immutable terrain + player/goal and hand a replan request to the worker
@@ -1174,17 +1187,27 @@ public sealed class RadarApp : IDisposable
     /// <summary>Rebuild <see cref="_selectedPaths"/> from the trackers' CurrentPoints, each colored by
     /// its id's selection-order slot (capped at the palette size). CHEAP — no A*. Takes a selection
     /// snapshot so it never touches _selectedIds directly.</summary>
-    private void RebuildSelectedPaths(List<string> selected)
+    private void RebuildSelectedPaths(List<string> selected, NumVec2 player)
     {
         var paths = new List<SelectedPath>(selected.Count);
         for (var i = 0; i < selected.Count; i++)
         {
-            if (!_trackers.TryGetValue(selected[i], out var tracker)) continue;
+            var id = selected[i];
+            if (!_trackers.TryGetValue(id, out var tracker)) continue;
             var pts = tracker.CurrentPoints;
             if (pts.Count > 0)
             {
-                var id = selected[i];
-                paths.Add(new SelectedPath(Math.Min(i, MaxSelectedTargets - 1), id, TargetLabel(id), pts));
+                var slot = Math.Min(i, MaxSelectedTargets - 1);
+                if (TryResolveTargetInfo(id, out var info))
+                {
+                    var dist = NumVec2.Distance(info.Grid, player);
+                    paths.Add(new SelectedPath(slot, id, info.Label, info.IsEntity, info.Status, dist, pts));
+                }
+                else
+                {
+                    paths.Add(new SelectedPath(slot, id, id, id.StartsWith("e:", StringComparison.Ordinal),
+                        NavTargetStatus.NoPath, -1f, pts));
+                }
             }
         }
         _selectedPaths = paths;
@@ -1194,9 +1217,7 @@ public sealed class RadarApp : IDisposable
     /// raw id only when the target was never observed.</summary>
     private string TargetLabel(string id)
     {
-        foreach (var t in _navTargets) if (t.Id == id) return t.Name;
-        if (TryGetTargetSnapshot(id, out var cached)) return cached.Label;
-        return id;
+        return TryResolveTargetInfo(id, out var info) ? info.Label : id;
     }
 
     /// <summary>Friendly display label for a tile landmark (curated if enabled + present, else derived).</summary>
@@ -1249,15 +1270,45 @@ public sealed class RadarApp : IDisposable
     /// <summary>Build the legend rows (one per unified navigation target), marking the selected targets
     /// and their selection-order color slot (-1 when unselected). Takes a selection snapshot so it
     /// doesn't touch _selectedIds while the API thread may be mutating it.</summary>
-    private List<LegendEntry> BuildLegend(List<string> selected)
+    private List<LegendEntry> BuildLegend(List<string> selected, NumVec2 player)
     {
-        var legend = new List<LegendEntry>(_navTargets.Count);
+        var legend = new List<LegendEntry>(_navTargets.Count + selected.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var t in _navTargets)
         {
             var slot = selected.IndexOf(t.Id);
-            legend.Add(new LegendEntry(t, slot, slot >= 0));
+            var dist = NumVec2.Distance(t.Grid, player);
+                var status = slot >= 0 && !HasSelectedPath(t.Id) ? NavTargetStatus.NoPath : NavTargetStatus.Live;
+                legend.Add(new LegendEntry(t, slot, slot >= 0, status, dist));
+            seen.Add(t.Id);
+        }
+
+        for (var i = 0; i < selected.Count; i++)
+        {
+            var id = selected[i];
+            if (seen.Contains(id)) continue;
+
+            var slot = Math.Min(i, MaxSelectedTargets - 1);
+            if (TryResolveTargetInfo(id, out var info))
+            {
+                var target = new NavTarget(id, info.Label, info.Grid, "", info.IsEntity);
+                var status = HasSelectedPath(id) ? info.Status : NavTargetStatus.NoPath;
+                legend.Add(new LegendEntry(target, slot, true, status, NumVec2.Distance(info.Grid, player)));
+            }
+            else
+            {
+                var target = new NavTarget(id, id, player, "", id.StartsWith("e:", StringComparison.Ordinal));
+                legend.Add(new LegendEntry(target, slot, true, NavTargetStatus.NoPath, -1f));
+            }
         }
         return legend;
+    }
+
+    private bool HasSelectedPath(string id)
+    {
+        foreach (var p in _selectedPaths)
+            if (p.TargetId == id) return true;
+        return false;
     }
 
     // ── Public navigation accessors (callable from the API/HTTP thread; all _navLock-guarded). ──

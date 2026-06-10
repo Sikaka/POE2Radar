@@ -348,6 +348,7 @@ public sealed class OverlayRenderer : IDisposable
             _bPath!.Color = PathColor(path.ColorSlot);
 
             NumVec2? prev = null;
+            NumVec2? labelAnchor = null;
             foreach (var (gx, gy) in path.Points)
             {
                 if (!TryProjectWorldPathPoint((gx, gy), m, z, W, H, out var p))
@@ -358,11 +359,14 @@ public sealed class OverlayRenderer : IDisposable
                 if (prev is { } pr) rt.DrawLine(pr, p, _bPath, 3f);
                 rt.FillEllipse(new Ellipse(p, 4f, 4f), _bPath);
                 prev = p;
+                labelAnchor = p;
             }
 
             var end = path.Points[path.Points.Count - 1];
             if (TryProjectWorldPathPoint(end, m, z, W, H, out var anchor))
                 AddPathLabel(labels, path, anchor, W, H);
+            else if (labelAnchor is { } fallbackAnchor)
+                AddPathLabel(labels, path, fallbackAnchor, W, H);
         }
 
         DrawPathLabels(rt, labels, W, H);
@@ -578,12 +582,12 @@ public sealed class OverlayRenderer : IDisposable
         var cxp = wx * m[0] + wy * m[4] + z * m[8] + m[12];
         var cyp = wx * m[1] + wy * m[5] + z * m[9] + m[13];
         screen = new NumVec2((cxp / cw / 2f + 0.5f) * W, (0.5f - cyp / cw / 2f) * H);
-        return true;
+        return float.IsFinite(screen.X) && float.IsFinite(screen.Y);
     }
 
     private void AddPathLabel(List<PathLabelAnchor> labels, SelectedPath path, NumVec2 anchor, float W, float H)
     {
-        var text = string.IsNullOrWhiteSpace(path.Label) ? path.TargetId : path.Label;
+        var text = PathEndpointLabel(path);
         var rowText = PathLabelText(path.ColorSlot, text);
         var width = PathLabelWidth(rowText, W);
         var height = PathLabelPadY * 2f + PathLabelRowH;
@@ -690,6 +694,31 @@ public sealed class OverlayRenderer : IDisposable
 
     private static string PathLabelText(int colorSlot, string label) => $"{colorSlot + 1}. {label}";
 
+    private static string PathEndpointLabel(SelectedPath path)
+    {
+        var label = string.IsNullOrWhiteSpace(path.Label) ? path.TargetId : path.Label;
+        return label + StatusSuffix(path.Status, path.IsEntity);
+    }
+
+    private static string LegendRowText(LegendEntry row)
+    {
+        var type = row.Target.IsEntity ? "E" : "L";
+        var name = string.IsNullOrWhiteSpace(row.Target.Name) ? row.Target.Id : row.Target.Name;
+        var prefix = row.IsSelected ? $"{row.ColorSlot + 1}. {type} " : $"  {type} ";
+        return prefix + name + DistanceSuffix(row.Distance) + StatusSuffix(row.Status, row.Target.IsEntity);
+    }
+
+    private static string DistanceSuffix(float distance)
+        => distance >= 0f ? $" {(int)MathF.Round(distance)}c" : "";
+
+    private static string StatusSuffix(NavTargetStatus status, bool isEntity)
+        => status switch
+        {
+            NavTargetStatus.Cached when isEntity => " (last seen)",
+            NavTargetStatus.NoPath => " (no path)",
+            _ => "",
+        };
+
     private static float PathLabelWidth(string rowText, float W)
     {
         var available = Math.Max(24f, W - PathLabelMargin * 2f);
@@ -706,7 +735,7 @@ public sealed class OverlayRenderer : IDisposable
     }
 
     // ── Navigation-menu widget geometry (all in client/device pixels at 96 DPI). ──
-    private const float NavPad = 6f, NavRowH = 18f, NavHeaderH = 22f, NavSwatch = 10f, NavPanelW = 230f;
+    private const float NavPad = 6f, NavRowH = 18f, NavHeaderH = 22f, NavSwatch = 10f, NavPanelW = 270f;
     private const float NavMargin = 6f;                 // gap from the screen edge when pinned
     // ASCII corner buttons (Consolas lacks reliable ↖↗↙↘ glyphs, so we use these per spec).
     private static readonly (string Label, string Corner)[] NavCorners =
@@ -755,7 +784,8 @@ public sealed class OverlayRenderer : IDisposable
         var headerY = isBottom && expanded ? top + panelH - NavPad - NavHeaderH : top + NavPad;
 
         // "POE2Radar" chip (click → toggle dropdown). Sized to its text so the corner buttons sit after it.
-        const string chip = "POE2Radar";
+        var selectedCount = ctx.Legend.Count(static r => r.IsSelected);
+        var chip = selectedCount > 0 ? $"POE2Radar {selectedCount}/{PathPalette.Length}" : "POE2Radar";
         var chipW = chip.Length * 7.3f + 8f;
         var chipRect = new Vortice.RawRectF(left + NavPad, headerY, left + NavPad + chipW, headerY + NavHeaderH - 2f);
         rt.FillRectangle(chipRect, _bPanel!);
@@ -801,11 +831,21 @@ public sealed class OverlayRenderer : IDisposable
                 rt.DrawRectangle(swatchRect, _bPath, 1f);
             }
 
-            // Selected rows get a "> " marker + the highlight color. Entity POIs get a "*" prefix so
-            // they're distinguishable from tile landmarks at a glance. Name is already prettified/curated.
-            var prefix = row.IsSelected ? "> " : (row.Target.IsEntity ? "* " : "  ");
-            var text = prefix + row.Target.Name;
-            var textBrush = row.IsSelected ? _bPlayer! : (row.Target.IsEntity ? _bLandmark! : _bText!);
+            // Selected rows show their route number; entity/landmark type, distance, and cached/no-path
+            // state are embedded in the row text so the menu answers "what is this route?" at a glance.
+            var text = LegendRowText(row);
+            ID2D1SolidColorBrush textBrush;
+            if (row.IsSelected)
+            {
+                _bStyle!.Color = row.Status == NavTargetStatus.NoPath
+                    ? WithAlpha(ColText, 0.55f)
+                    : PathColor(row.ColorSlot);
+                textBrush = _bStyle;
+            }
+            else
+            {
+                textBrush = row.Target.IsEntity ? _bLandmark! : _bText!;
+            }
             rt.DrawText(text, _tf!, new Rect(left + NavPad + NavSwatch + 5f, y, left + panelW - 4f, y + NavRowH), textBrush, DrawTextOptions.Clip);
             y += NavRowH;
         }
