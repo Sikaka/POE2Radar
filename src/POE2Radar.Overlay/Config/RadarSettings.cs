@@ -39,6 +39,8 @@ public sealed class RadarSettings
     // ── Navigation-menu widget: which screen corner it is pinned to.
     //    One of "TopLeft", "TopRight", "BottomLeft", "BottomRight". ──
     public string NavMenuCorner { get; set; } = "TopLeft";
+    // Developer/performance tuning aid: show compact timing/read counters in the nav menu.
+    public bool ShowPerfStats { get; set; } = false;
 
     // ── Persistent auto-nav: substrings matched (case-insensitive Contains) against a navigation
     //    target's MatchKey (tile path / entity metadata). On every zone change, every target whose

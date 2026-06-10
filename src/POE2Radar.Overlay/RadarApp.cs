@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using NumVec2 = System.Numerics.Vector2;
@@ -45,6 +46,8 @@ public sealed class RadarApp : IDisposable
     private nint _areaInstanceForApi;   // current AreaInstance, for the /api/tiles tile-path lookup
     private nint _inGameStateForApi;    // current InGameState, for the /api/atlas node read
     private volatile RadarState _state = RadarState.Empty;
+    private readonly PerfAccumulator _perf = new();
+    private PerfSnapshot _perfSnapshot = PerfSnapshot.Empty;
 
     // ── Atlas overlay: live node highlights (takes precedence over the radar when the atlas is open). ──
     private readonly object _atlasLock = new();
@@ -278,6 +281,7 @@ public sealed class RadarApp : IDisposable
         _gameHwnd = OverlayNative.FindWindowForProcess(_process.ProcessId);
         while (!_shutdown)
         {
+            var frameStart = Stopwatch.GetTimestamp();
             if (_gameHwnd == 0) _gameHwnd = OverlayNative.FindWindowForProcess(_process.ProcessId);
             if (_gameHwnd != 0) _window.TrackGameWindow(_gameHwnd);
             if (!_window.PumpMessages()) break;
@@ -285,12 +289,19 @@ public sealed class RadarApp : IDisposable
             // Configurable frame budget (read live so dashboard edits apply immediately). The world
             // walk is independently throttled to WorldHz inside Tick().
             var hz = Math.Clamp(_settings.FpsCap, 15, 360);
-            Thread.Sleep(Math.Max(1, 1000 / hz));
+            var budgetMs = 1000.0 / hz;
+            var elapsedMs = Stopwatch.GetElapsedTime(frameStart).TotalMilliseconds;
+            var sleepMs = budgetMs - elapsedMs;
+            if (sleepMs >= 1)
+                Thread.Sleep((int)sleepMs);
         }
     }
 
     private void Tick()
     {
+        var tickStart = Stopwatch.GetTimestamp();
+        double worldMs = 0, entitiesMs = 0, hpBarsMs = 0;
+
         HandleHotkeys();
 
         var inGame = _live.TryResolve(out var inGameState, out var areaInstance, out var localPlayer);
@@ -319,10 +330,15 @@ public sealed class RadarApp : IDisposable
             var now = DateTime.UtcNow;
             if ((now - _worldAt).TotalMilliseconds >= 1000.0 / WorldHz)
             {
+                var worldStart = Stopwatch.GetTimestamp();
                 _worldAt = now;
                 _charLevel = _live.PlayerLevel(localPlayer);   // changes ~never; 30 Hz is plenty
                 _terrain ??= _live.Terrain(areaInstance);
+
+                var entitiesStart = Stopwatch.GetTimestamp();
                 _entities = _live.Entities(areaInstance);
+                entitiesMs = ElapsedMs(entitiesStart);
+
                 // Drop the local player's own entity — it lives in the AwakeEntities map like any
                 // other Player, but the dedicated center blip already represents "you" (gated by
                 // ShowPlayerBlip). Without this, a Player-category dot renders at map-center even with
@@ -397,17 +413,20 @@ public sealed class RadarApp : IDisposable
                 // nav-target list — rebuild them here (30 Hz) rather than every render frame.
                 _selectedSnapshot = SnapshotSelection();
                 _legend = BuildLegend(_selectedSnapshot, player);
+                worldMs = ElapsedMs(worldStart);
             }
 
             // EVERY render frame (not just world ticks): refresh the live position + HP of each HP-bar mob
             // so the bars track moving monsters smoothly. Cheap — two tiny reads per bar via cached
             // component addresses; only the ~dozens of bar mobs, never the full entity map.
+            var hpBarsStart = Stopwatch.GetTimestamp();
             _hpFrame.Clear();
             foreach (var spec in _hpSpecs)
             {
                 if (!_live.TryLiveBar(spec.Entity, out var w, out var cur, out var max) || max <= 0 || cur <= 0) continue;
                 _hpFrame.Add(new HpBarTarget(w, Math.Clamp((float)cur / max, 0f, 1f), spec.Width, spec.Fill, spec.BorderWidth, spec.Border));
             }
+            hpBarsMs = ElapsedMs(hpBarsStart);
         }
         else
         {
@@ -418,7 +437,7 @@ public sealed class RadarApp : IDisposable
         }
 
         _state = new RadarState(inGame, _areaHash, areaLevel, map.IsVisible, map.Zoom, player, _entities, _landmarks,
-            _hpPct, _manaPct, _esPct, _autoFlask, _flaskNote, _areaCode, _charName, _charLevel);
+            _hpPct, _manaPct, _esPct, _autoFlask, _flaskNote, _areaCode, _charName, _charLevel, _perfSnapshot);
 
         var realActive = _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd;
         // "Always show" draws the overlay even when PoE2 isn't focused (for dashboard calibration).
@@ -460,6 +479,8 @@ public sealed class RadarApp : IDisposable
             Legend: _legend,
             NavMenuExpanded: _navMenuExpanded,
             NavMenuCorner: _settings.NavMenuCorner,
+            ShowPerfStats: _settings.ShowPerfStats,
+            Perf: _perfSnapshot,
             Styles: _settings.Styles,
             HpBars: _settings.HpBars,
             HpBarTargets: _hpFrame,
@@ -489,7 +510,19 @@ public sealed class RadarApp : IDisposable
         if (ctx.Active || _overlayHadContent)
         {
             _renderer.Render(ctx);
+            _perf.RecordRender(
+                _renderer.LastDrawMs,
+                _renderer.LastPresentMs,
+                _renderer.LastNameplatesMs,
+                _renderer.LastMapMs,
+                _renderer.LastPathsMs,
+                _renderer.LastNavMenuMs,
+                _renderer.LastAtlasMs);
             _overlayHadContent = ctx.Active;
+        }
+        else
+        {
+            _perf.RecordRender(0, 0, 0, 0, 0, 0, 0);
         }
 
         // Make the overlay grab clicks only while the cursor is over a clickable legend row;
@@ -497,7 +530,22 @@ public sealed class RadarApp : IDisposable
         // LegendRowRects reflects the frame just drawn. Gate on REAL focus (never grab clicks when
         // PoE2 isn't foreground, even if "always show overlay" is keeping it drawn).
         UpdateClickThrough(realActive);
+
+        _perfSnapshot = _perf.RecordFrame(
+            tickMs: ElapsedMs(tickStart),
+            worldMs: worldMs,
+            entitiesMs: entitiesMs,
+            hpBarsMs: hpBarsMs,
+            readCount: _reader.ReadCount,
+            readBytes: _reader.BytesRead,
+            failedReads: _reader.FailedReads,
+            entityCount: _entities.Count,
+            hpBarCount: _hpFrame.Count,
+            selectedPathCount: _selectedPaths.Count);
     }
+
+    private static double ElapsedMs(long start)
+        => Stopwatch.GetElapsedTime(start).TotalMilliseconds;
 
     /// <summary>
     /// Per-frame click-through toggle. The overlay captures clicks (click-through OFF) only while the
@@ -1581,6 +1629,110 @@ public sealed class RadarApp : IDisposable
 
     [StructLayout(LayoutKind.Sequential)] private struct CursorPoint { public int X, Y; }
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out CursorPoint p);
+
+    private sealed class PerfAccumulator
+    {
+        private const double Alpha = 0.08;
+        private long _lastStamp = Stopwatch.GetTimestamp();
+        private long _lastReadCount;
+        private long _lastReadBytes;
+        private long _lastFailedReads;
+        private bool _initialized;
+        private double _fps;
+        private double _tickMs;
+        private double _worldMs;
+        private double _entitiesMs;
+        private double _hpBarsMs;
+        private double _drawMs;
+        private double _presentMs;
+        private double _nameplatesMs;
+        private double _mapMs;
+        private double _pathsMs;
+        private double _navMenuMs;
+        private double _atlasMs;
+        private double _readsPerSec;
+        private double _mibPerSec;
+        private double _failedReadsPerSec;
+
+        public void RecordRender(
+            double drawMs,
+            double presentMs,
+            double nameplatesMs,
+            double mapMs,
+            double pathsMs,
+            double navMenuMs,
+            double atlasMs)
+        {
+            _drawMs = Smooth(_drawMs, drawMs);
+            _presentMs = Smooth(_presentMs, presentMs);
+            _nameplatesMs = Smooth(_nameplatesMs, nameplatesMs);
+            _mapMs = Smooth(_mapMs, mapMs);
+            _pathsMs = Smooth(_pathsMs, pathsMs);
+            _navMenuMs = Smooth(_navMenuMs, navMenuMs);
+            _atlasMs = Smooth(_atlasMs, atlasMs);
+        }
+
+        public PerfSnapshot RecordFrame(
+            double tickMs,
+            double worldMs,
+            double entitiesMs,
+            double hpBarsMs,
+            long readCount,
+            long readBytes,
+            long failedReads,
+            int entityCount,
+            int hpBarCount,
+            int selectedPathCount)
+        {
+            var now = Stopwatch.GetTimestamp();
+            var seconds = Math.Max(0.001, (now - _lastStamp) / (double)Stopwatch.Frequency);
+
+            if (!_initialized)
+            {
+                _lastReadCount = readCount;
+                _lastReadBytes = readBytes;
+                _lastFailedReads = failedReads;
+                _initialized = true;
+            }
+
+            _fps = Smooth(_fps, 1.0 / seconds);
+            _tickMs = Smooth(_tickMs, tickMs);
+            if (worldMs > 0) _worldMs = Smooth(_worldMs, worldMs);
+            if (entitiesMs > 0) _entitiesMs = Smooth(_entitiesMs, entitiesMs);
+            _hpBarsMs = Smooth(_hpBarsMs, hpBarsMs);
+            _readsPerSec = Smooth(_readsPerSec, Math.Max(0, readCount - _lastReadCount) / seconds);
+            _mibPerSec = Smooth(_mibPerSec, Math.Max(0, readBytes - _lastReadBytes) / seconds / (1024.0 * 1024.0));
+            _failedReadsPerSec = Smooth(_failedReadsPerSec, Math.Max(0, failedReads - _lastFailedReads) / seconds);
+
+            _lastStamp = now;
+            _lastReadCount = readCount;
+            _lastReadBytes = readBytes;
+            _lastFailedReads = failedReads;
+
+            return new PerfSnapshot(
+                (float)_fps,
+                (float)_tickMs,
+                (float)_worldMs,
+                (float)_entitiesMs,
+                (float)_hpBarsMs,
+                (float)_drawMs,
+                (float)_presentMs,
+                (float)_nameplatesMs,
+                (float)_mapMs,
+                (float)_pathsMs,
+                (float)_navMenuMs,
+                (float)_atlasMs,
+                (float)_readsPerSec,
+                (float)_mibPerSec,
+                (float)_failedReadsPerSec,
+                entityCount,
+                hpBarCount,
+                selectedPathCount);
+        }
+
+        private static double Smooth(double current, double sample)
+            => current <= 0 ? sample : current + (sample - current) * Alpha;
+    }
 
     public void Dispose()
     {

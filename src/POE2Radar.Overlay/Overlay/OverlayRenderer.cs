@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using POE2Radar.Core.Game;
@@ -85,6 +86,13 @@ public sealed class OverlayRenderer : IDisposable
     private ID2D1SolidColorBrush? _bStyle; // scratch brush for config-driven icons / HP bars (recolored per draw)
     private IDWriteTextFormat? _tf;
     private bool _ready;
+    public double LastDrawMs { get; private set; }
+    public double LastPresentMs { get; private set; }
+    public double LastNameplatesMs { get; private set; }
+    public double LastMapMs { get; private set; }
+    public double LastPathsMs { get; private set; }
+    public double LastNavMenuMs { get; private set; }
+    public double LastAtlasMs { get; private set; }
 
     public OverlayRenderer(OverlayWindow window) { _window = window; }
 
@@ -107,6 +115,8 @@ public sealed class OverlayRenderer : IDisposable
     {
         if (!_window.IsValid) return;
         EnsureResources();
+        LastNameplatesMs = LastMapMs = LastPathsMs = LastNavMenuMs = LastAtlasMs = 0;
+        var drawStart = Stopwatch.GetTimestamp();
         var rt = _window.RenderTarget;
         rt.BeginDraw();
         rt.Clear(new Color4(0f, 0f, 0f, 0f));
@@ -119,29 +129,50 @@ public sealed class OverlayRenderer : IDisposable
             {
                 // The Atlas screen is open: draw the highlight rings + off-screen arrows and the F10 route,
                 // never the world radar/minimap (meaningless over the atlas).
+                var phaseStart = Stopwatch.GetTimestamp();
                 DrawAtlasRoute(rt, ctx);                   // F10 route line + START/END markers (under the rings)
                 DrawAtlas(rt, ctx);                        // tracked-map rings + off-screen arrows
+                LastAtlasMs = Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
                 _legendRowRects.Clear();
             }
             else if (ctx.Active && ctx.InGame)
             {
+                var phaseStart = Stopwatch.GetTimestamp();
                 DrawNameplates(rt, ctx);                   // world-space HP bars over hostile mobs
+                LastNameplatesMs = Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
                 if (ctx.Map.IsVisible)
+                {
+                    phaseStart = Stopwatch.GetTimestamp();
                     DrawMap(rt, ctx);                      // terrain + dots + on-map path polylines
+                    LastMapMs = Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
+                }
                 else
+                {
+                    phaseStart = Stopwatch.GetTimestamp();
                     DrawPathsWorld(rt, ctx);               // ground waypoints + lines when the map is closed
+                    LastPathsMs = Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
+                }
 
                 // The navigation-menu widget is ALWAYS interactive in-game (map open or not). It
                 // (re)builds _legendRowRects, so it must run last; nothing else touches those rects now.
+                phaseStart = Stopwatch.GetTimestamp();
                 DrawNavMenu(rt, ctx);
+                LastNavMenuMs = Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
             }
             else
             {
                 _legendRowRects.Clear(); // not active/in-game: no stale click rects
             }
         }
-        finally { rt.EndDraw(); }
+        finally
+        {
+            rt.EndDraw();
+            LastDrawMs = Stopwatch.GetElapsedTime(drawStart).TotalMilliseconds;
+        }
+
+        var presentStart = Stopwatch.GetTimestamp();
         _window.Present();
+        LastPresentMs = Stopwatch.GetElapsedTime(presentStart).TotalMilliseconds;
     }
 
     /// <summary>The F10 atlas route: the shortest path (through the node connection graph) from the player's
@@ -763,8 +794,9 @@ public sealed class OverlayRenderer : IDisposable
 
         var expanded = ctx.NavMenuExpanded;
         var rowCount = expanded ? ctx.Legend.Count : 0;
+        var perfRows = expanded && ctx.ShowPerfStats ? 5 : 0;
         var panelW   = NavPanelW;
-        var panelH   = NavHeaderH + rowCount * NavRowH + NavPad * 2;
+        var panelH   = NavHeaderH + (rowCount + perfRows) * NavRowH + NavPad * 2;
 
         // Anchor at the chosen corner, then clamp so the whole panel (incl. dropdown) is on-screen.
         var corner   = ctx.NavMenuCorner;
@@ -848,6 +880,30 @@ public sealed class OverlayRenderer : IDisposable
             }
             rt.DrawText(text, _tf!, new Rect(left + NavPad + NavSwatch + 5f, y, left + panelW - 4f, y + NavRowH), textBrush, DrawTextOptions.Clip);
             y += NavRowH;
+        }
+
+        if (ctx.ShowPerfStats)
+            DrawPerfStats(rt, ctx.Perf, left, y, panelW);
+    }
+
+    private void DrawPerfStats(ID2D1RenderTarget rt, PerfSnapshot p, float left, float y, float panelW)
+    {
+        _bStyle!.Color = WithAlpha(ColText, 0.72f);
+        rt.DrawLine(new NumVec2(left + NavPad, y + 1f), new NumVec2(left + panelW - NavPad, y + 1f), _bStyle, 1f);
+
+        var lines = new[]
+        {
+            $"fps {p.Fps,3:F0}  tick {p.TickMs:F1}  world {p.WorldMs:F1}  ent {p.EntitiesMs:F1}",
+            $"draw {p.DrawMs:F1}  present {p.PresentMs:F1}  hp {p.HpBarsMs:F1}",
+            $"map {p.MapMs:F1}  paths {p.PathsMs:F1}  names {p.NameplatesMs:F1}",
+            $"menu {p.NavMenuMs:F1}  atlas {p.AtlasMs:F1}  sel {p.SelectedPathCount}",
+            $"reads {p.ReadsPerSec / 1000f:F1}k/s  {p.MibPerSec:F2} MiB/s  fail {p.FailedReadsPerSec:F0}/s",
+        };
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var rowY = y + i * NavRowH + 2f;
+            rt.DrawText(lines[i], _tf!, new Rect(left + NavPad, rowY, left + panelW - NavPad, rowY + NavRowH), _bStyle, DrawTextOptions.Clip);
         }
     }
 

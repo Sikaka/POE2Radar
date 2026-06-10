@@ -147,6 +147,7 @@ public sealed class ApiServer : IDisposable
                     entityCount = s.Entities.Count,
                     poiCount = s.Entities.Count(e => e.Poi),
                     landmarkCount = s.Landmarks.Count,
+                    perf = s.Perf,
                     counts,
                 }, Json));
                 break;
@@ -440,6 +441,7 @@ public sealed class ApiServer : IDisposable
         showTerrain = _settings.ShowTerrain,
         showPlayerBlip = _settings.ShowPlayerBlip,
         fpsCap = _settings.FpsCap,
+        showPerfStats = _settings.ShowPerfStats,
         hpBarNormal = _settings.HpBarNormal,
         hpBarMagic = _settings.HpBarMagic,
         hpBarRare = _settings.HpBarRare,
@@ -487,6 +489,7 @@ public sealed class ApiServer : IDisposable
                 case "showTerrain" when TryBool(p.Value, out var b): _settings.ShowTerrain = b; applied.Add(p.Name); break;
                 case "showPlayerBlip" when TryBool(p.Value, out var b): _settings.ShowPlayerBlip = b; applied.Add(p.Name); break;
                 case "fpsCap" when TryInt(p.Value, out var n): _settings.FpsCap = Math.Clamp(n, 15, 360); applied.Add(p.Name); break;
+                case "showPerfStats" when TryBool(p.Value, out var b): _settings.ShowPerfStats = b; applied.Add(p.Name); break;
                 case "hpBarNormal" when TryBool(p.Value, out var b): _settings.HpBarNormal = b; applied.Add(p.Name); break;
                 case "hpBarMagic" when TryBool(p.Value, out var b): _settings.HpBarMagic = b; applied.Add(p.Name); break;
                 case "hpBarRare" when TryBool(p.Value, out var b): _settings.HpBarRare = b; applied.Add(p.Name); break;
@@ -871,9 +874,11 @@ public sealed record RadarState(
     string FlaskNote,
     string AreaCode,
     string CharName,
-    int CharLevel)
+    int CharLevel,
+    PerfSnapshot Perf)
 {
     public static readonly RadarState Empty =
         new(false, 0, 0, false, 0, System.Numerics.Vector2.Zero,
-            Array.Empty<Poe2Live.EntityDot>(), Array.Empty<Poe2Live.Landmark>(), 100, 100, 100, false, "", "", "", 0);
+            Array.Empty<Poe2Live.EntityDot>(), Array.Empty<Poe2Live.Landmark>(), 100, 100, 100, false, "", "", "", 0,
+            PerfSnapshot.Empty);
 }

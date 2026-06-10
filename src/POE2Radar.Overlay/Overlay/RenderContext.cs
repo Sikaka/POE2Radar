@@ -29,6 +29,30 @@ public readonly record struct SelectedPath(
     int ColorSlot, string TargetId, string Label, bool IsEntity, NavTargetStatus Status, float Distance,
     IReadOnlyList<(int x, int y)> Points);
 
+/// <summary>Low-overhead runtime timings used to compare read/update/render costs while tuning the overlay.</summary>
+public readonly record struct PerfSnapshot(
+    float Fps,
+    float TickMs,
+    float WorldMs,
+    float EntitiesMs,
+    float HpBarsMs,
+    float DrawMs,
+    float PresentMs,
+    float NameplatesMs,
+    float MapMs,
+    float PathsMs,
+    float NavMenuMs,
+    float AtlasMs,
+    float ReadsPerSec,
+    float MibPerSec,
+    float FailedReadsPerSec,
+    int EntityCount,
+    int HpBarCount,
+    int SelectedPathCount)
+{
+    public static readonly PerfSnapshot Empty = new();
+}
+
 /// <summary>A monster HP bar to draw, with everything expensive already decided at world rate: the style
 /// (width + packed 0xAARRGGBB fill/border colors) was resolved once when the entity set was built; only
 /// <see cref="World"/> + <see cref="Frac"/> are refreshed live every render frame (cheap per-entity reads)
@@ -88,6 +112,8 @@ public sealed record RenderContext(
     // ── Collapsible "POE2Radar" navigation-menu widget (always drawn when Active+InGame). ──
     bool NavMenuExpanded,         // dropdown open?
     string NavMenuCorner,         // pinned corner: TopLeft/TopRight/BottomLeft/BottomRight
+    bool ShowPerfStats,           // opt-in compact timing block in the nav menu
+    PerfSnapshot Perf,
     // ── User-tweakable icon style table + HP-bar geometry (mirrored from RadarSettings). ──
     RadarStyles Styles,
     HpBarSettings HpBars,
