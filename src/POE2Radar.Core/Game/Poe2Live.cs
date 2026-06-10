@@ -49,7 +49,7 @@ public sealed class Poe2Live
     public enum Rarity { Normal = 0, Magic = 1, Rare = 2, Unique = 3, NonMonster = -1 }
 
     public readonly record struct EntityDot(
-        uint Id, nint Address, System.Numerics.Vector2 Grid, Vector3 World, EntityCategory Category, string Metadata,
+        uint Id, nint Address, System.Numerics.Vector2 Grid, Vector3 World, float TerrainHeight, EntityCategory Category, string Metadata,
         int HpCur, int HpMax, bool Poi, byte Reaction, Rarity Rarity, bool Opened, bool IconComplete = false)
     {
         /// <summary>Monsters are "alive" only with positive HP; non-life entities are always shown.</summary>
@@ -71,7 +71,17 @@ public sealed class Poe2Live
         float CenterX,
         float CenterY,
         float Width,
-        float Height);
+        float Height,
+        float PositionX,
+        float PositionY,
+        float LocalScaleMultiplier,
+        byte ScaleIndex,
+        // True only when Position/Width/Height are a fully resolved SCREEN rect (UiElement parent
+        // chain + game UI scale). False means they are raw unscaled values and must not be used
+        // to place the on-screen minimap frame.
+        bool HasScreenRect = false);
+
+    public readonly record struct MapViews(MapUi LargeMap, MapUi MiniMap);
 
     /// <summary>A static tile-based landmark: a notable terrain feature and its grid centroid.
     /// <paramref name="CuratedName"/> is an optional curated friendly label (null when none matches);
@@ -165,6 +175,7 @@ public sealed class Poe2Live
 
     /// <summary>Player grid position (from the Render component's world position ÷ grid ratio).</summary>
     public System.Numerics.Vector2? PlayerGrid(nint localPlayer) => EntityGrid(localPlayer);
+    public float PlayerTerrainHeight(nint localPlayer) => EntityTerrainHeight(localPlayer) ?? 0f;
 
     public readonly record struct Vitals(int HpCur, int HpUnreserved, int ManaCur, int ManaUnreserved,
         int EsCur, int EsUnreserved)
@@ -340,6 +351,7 @@ public sealed class Poe2Live
             var world = EntityWorld(entity);
             if (world is not { } wv) continue;
             var g = new System.Numerics.Vector2(wv.X / Poe2.WorldToGridRatio, wv.Y / Poe2.WorldToGridRatio);
+            var terrainHeight = EntityTerrainHeight(entity) ?? 0f;
 
             var cat = Categorize(entity);
             int hpCur = 0, hpMax = 0;
@@ -350,7 +362,7 @@ public sealed class Poe2Live
             if (cat == EntityCategory.Chest) opened = ReadChestOpened(entity);
 
             var (poi, iconComplete) = ReadIcon(entity);
-            dots.Add(new EntityDot(id, entity, g, wv, cat, _meta.GetValueOrDefault(entity, ""), hpCur, hpMax,
+            dots.Add(new EntityDot(id, entity, g, wv, terrainHeight, cat, _meta.GetValueOrDefault(entity, ""), hpCur, hpMax,
                 poi, ReadReaction(entity), rarity, opened, iconComplete));
         }
         return dots;
@@ -668,8 +680,11 @@ public sealed class Poe2Live
     /// this area, fall back to "more than the always-on baseline visible" (&gt;=2).
     /// </summary>
     public MapUi ReadMap(nint inGameState, nint areaInstance)
+        => ReadMaps(inGameState, areaInstance, 0, 0).LargeMap;
+
+    public MapViews ReadMaps(nint inGameState, nint areaInstance, int windowWidth, int windowHeight)
     {
-        if (areaInstance != _mapCacheKey || _mapEls.Count == 0)
+        if (areaInstance != _mapCacheKey)
         {
             _mapCacheKey = areaInstance;
             _mapEls.Clear();
@@ -677,16 +692,29 @@ public sealed class Poe2Live
             _everVisible.Clear();
             _selectedMapEl = 0;
             _selectedMapMisses = 0;
-            DiscoverMapElements(inGameState);
         }
+
+        // GameHelper's stable path reads the LargeMap/MiniMap pointers directly from GameUi -> MapParent.
+        // Prefer it when available; the UI-tree scan below remains a patch-drift fallback.
+        if (TryReadDirectMaps(inGameState, windowWidth, windowHeight, out var direct))
+        {
+            _selectedMapEl = direct.LargeMap.Element;
+            _selectedMapMisses = 0;
+            ObserveMapVisibility(direct.LargeMap);
+            ObserveMapVisibility(direct.MiniMap);
+            return direct;
+        }
+
+        if (_mapEls.Count == 0)
+            DiscoverMapElements(inGameState);
 
         if (_selectedMapEl != 0)
         {
-            if (TryReadMapElement(_selectedMapEl, out var selected))
+            if (TryReadMapElement(_selectedMapEl, windowWidth, windowHeight, out var selected))
             {
                 _selectedMapMisses = 0;
-                if (selected.IsVisible) _everVisible.Add(_selectedMapEl); else _everHidden.Add(_selectedMapEl);
-                return selected;
+                ObserveMapVisibility(selected);
+                return new MapViews(selected, default);
             }
 
             if (++_selectedMapMisses < 4)
@@ -698,11 +726,30 @@ public sealed class Poe2Live
 
         var visibleCount = 0;
         var any = false; MapUi anyUi = default;
+        var largestVisible = false; MapUi largestVisibleUi = default;
+        var smallestVisible = false; MapUi smallestVisibleUi = default;
         var sawToggler = false; var togglerVisible = false; var haveTogglerUi = false; MapUi togglerUi = default;
+        var valid = new List<MapUi>(_mapEls.Count);
         foreach (var el in _mapEls)
         {
-            if (!TryReadMapElement(el, out var ui)) continue;
-            if (ui.IsVisible) { _everVisible.Add(el); visibleCount++; } else _everHidden.Add(el);
+            if (!TryReadMapElement(el, windowWidth, windowHeight, out var ui)) continue;
+            valid.Add(ui);
+            ObserveMapVisibility(ui);
+            if (ui.IsVisible)
+            {
+                visibleCount++;
+                if (!largestVisible || MapArea(ui) > MapArea(largestVisibleUi))
+                {
+                    largestVisible = true;
+                    largestVisibleUi = ui;
+                }
+
+                if (!smallestVisible || MapArea(ui) < MapArea(smallestVisibleUi))
+                {
+                    smallestVisible = true;
+                    smallestVisibleUi = ui;
+                }
+            }
             if (!any || ui.IsVisible) { any = true; anyUi = ui; }
 
             if (_everVisible.Contains(el) && _everHidden.Contains(el))
@@ -718,10 +765,83 @@ public sealed class Poe2Live
         {
             _selectedMapEl = togglerUi.Element;
             _selectedMapMisses = 0;
-            return togglerUi with { IsVisible = togglerVisible };
+            var large = togglerUi with { IsVisible = togglerVisible };
+            var mini = valid
+                .Where(x => x.Element != large.Element)
+                .OrderBy(MapArea)
+                .FirstOrDefault();
+            return new MapViews(large, mini);
         }
 
-        return anyUi with { IsVisible = visibleCount >= 2 };
+        // Before a toggle has been observed in this area, multiple map-like elements can be visible.
+        // Treat one visible map as the minimap; two visible maps means the largest visible one is the
+        // large map and the smallest visible one is the minimap.
+        var fallbackLarge = visibleCount >= 2 && largestVisible ? largestVisibleUi : default;
+        var fallbackMini = smallestVisible ? smallestVisibleUi : anyUi;
+        return new MapViews(fallbackLarge, fallbackMini);
+    }
+
+    private bool TryReadDirectMaps(nint inGameState, int windowWidth, int windowHeight, out MapViews maps)
+    {
+        maps = default;
+
+        var uiRoot = Ptr(inGameState + Poe2.InGameState.UiRoot);
+        var uiRootStruct = Ptr(inGameState + Poe2.InGameState.UiRootStructPtr);
+        var gameUi = uiRootStruct != 0 ? Ptr(uiRootStruct + Poe2.UiRootStruct.GameUiPtr) : 0;
+        var controllerGameUi = uiRootStruct != 0 ? Ptr(uiRootStruct + Poe2.UiRootStruct.GameUiControllerPtr) : 0;
+
+        // Different builds expose ImportantUi from slightly different anchors. Try the GH GameUi path
+        // first, then the direct/root anchors used by older POE2Radar probes.
+        Span<nint> bases = stackalloc nint[] { gameUi, controllerGameUi, uiRoot, inGameState };
+        for (var i = 0; i < bases.Length; i++)
+        {
+            var baseAddr = bases[i];
+            if (baseAddr == 0) continue;
+
+            var duplicate = false;
+            for (var j = 0; j < i; j++)
+            {
+                if (bases[j] != baseAddr) continue;
+                duplicate = true;
+                break;
+            }
+            if (duplicate) continue;
+
+            if (TryReadMapsFromImportantUi(baseAddr, windowWidth, windowHeight, out maps))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool TryReadMapsFromImportantUi(nint importantUi, int windowWidth, int windowHeight, out MapViews maps)
+    {
+        maps = default;
+        var mapParent = Ptr(importantUi + Poe2.ImportantUi.MapParentPtr);
+        if (mapParent == 0) return false;
+
+        var largeMap = Ptr(mapParent + Poe2.MapParent.LargeMapPtr);
+        var miniMap = Ptr(mapParent + Poe2.MapParent.MiniMapPtr);
+        if (largeMap == 0 || miniMap == 0 || largeMap == miniMap) return false;
+
+        if (!TryReadMapElement(largeMap, windowWidth, windowHeight, out var large)) return false;
+        if (!TryReadMapElement(miniMap, windowWidth, windowHeight, out var mini)) return false;
+        maps = new MapViews(large, mini);
+        return true;
+    }
+
+    private void ObserveMapVisibility(MapUi ui)
+    {
+        if (ui.Element == 0) return;
+        if (ui.IsVisible) _everVisible.Add(ui.Element);
+        else _everHidden.Add(ui.Element);
+    }
+
+    private static float MapArea(MapUi ui)
+    {
+        var width = float.IsFinite(ui.Width) && ui.Width > 0f ? ui.Width : 1f;
+        var height = float.IsFinite(ui.Height) && ui.Height > 0f ? ui.Height : 1f;
+        return width * height;
     }
 
     private void DiscoverMapElements(nint inGameState)
@@ -753,21 +873,190 @@ public sealed class Poe2Live
         }
     }
 
-    private bool TryReadMapElement(nint el, out MapUi ui)
+    private bool TryReadMapElement(nint el, int windowWidth, int windowHeight, out MapUi ui)
     {
         ui = default;
         if (!_reader.TryReadStruct<float>(el + Poe2.MapUiElement.DefaultShift, out var dsx)) return false;
-        if (!_reader.TryReadStruct<float>(el + Poe2.MapUiElement.DefaultShift + 4, out var dsy) || dsy != -20f) return false;
+        if (!_reader.TryReadStruct<float>(el + Poe2.MapUiElement.DefaultShift + 4, out var dsy)) return false;
+        if (MathF.Abs(dsx) > 0.001f || MathF.Abs(dsy + 20f) > 0.001f) return false;
         _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Shift, out var shiftX);
         _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Shift + 4, out var shiftY);
         _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Zoom, out var zoom);
+        if (!float.IsFinite(zoom) || zoom is <= 0.05f or >= 8f) return false;
         _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var width);
         _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var height);
         _reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var relX);
         _reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var relY);
-        ui = new MapUi(IsVisible(el), shiftX, shiftY, dsx, dsy, zoom, el, relX + width * 0.5f, relY + height * 0.5f, width, height);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMultiplier, out var localScaleMultiplier);
+        _reader.TryReadStruct<byte>(el + Poe2.UiElement.ScaleIndex, out var scaleIndex);
+        if (!float.IsFinite(localScaleMultiplier) || localScaleMultiplier <= 0f) localScaleMultiplier = 1f;
+
+        var positionX = relX;
+        var positionY = relY;
+        var screenWidth = width;
+        var screenHeight = height;
+        var hasScreenRect = false;
+        if (windowWidth > 0 && windowHeight > 0 &&
+            TryResolveUiScreenRect(el, windowWidth, windowHeight, out var sx, out var sy, out var sw, out var sh, out var sm, out var si))
+        {
+            positionX = sx;
+            positionY = sy;
+            screenWidth = sw;
+            screenHeight = sh;
+            localScaleMultiplier = sm;
+            scaleIndex = si;
+            hasScreenRect = true;
+        }
+
+        ui = new MapUi(
+            IsVisible(el),
+            shiftX,
+            shiftY,
+            dsx,
+            dsy,
+            zoom,
+            el,
+            positionX + screenWidth * 0.5f,
+            positionY + screenHeight * 0.5f,
+            screenWidth,
+            screenHeight,
+            positionX,
+            positionY,
+            localScaleMultiplier,
+            scaleIndex,
+            hasScreenRect);
         return true;
     }
+
+    private readonly record struct UiElementSnapshot(
+        float RelX,
+        float RelY,
+        float PosModX,
+        float PosModY,
+        float Width,
+        float Height,
+        float LocalScaleMultiplier,
+        byte ScaleIndex,
+        uint Flags,
+        nint Parent);
+
+    private bool TryReadUiElementSnapshot(nint el, out UiElementSnapshot snap)
+    {
+        snap = default;
+        if (!_reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var relX)) return false;
+        if (!_reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var relY)) return false;
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.PositionModifier, out var posModX);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.PositionModifier + 4, out var posModY);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var width);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var height);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMultiplier, out var localScaleMultiplier);
+        _reader.TryReadStruct<byte>(el + Poe2.UiElement.ScaleIndex, out var scaleIndex);
+        _reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var flags);
+        var parent = Ptr(el + Poe2.UiElement.Parent);
+        if (!float.IsFinite(localScaleMultiplier) || localScaleMultiplier <= 0f) localScaleMultiplier = 1f;
+        snap = new UiElementSnapshot(relX, relY, posModX, posModY, width, height, localScaleMultiplier, scaleIndex, flags, parent);
+        return true;
+    }
+
+    private bool TryResolveUiScreenRect(
+        nint el,
+        int windowWidth,
+        int windowHeight,
+        out float x,
+        out float y,
+        out float width,
+        out float height,
+        out float localScaleMultiplier,
+        out byte scaleIndex)
+    {
+        x = y = width = height = 0f;
+        localScaleMultiplier = 1f;
+        scaleIndex = 0;
+
+        var visited = new HashSet<nint>();
+        if (!TryResolveUiUnscaledPosition(el, windowWidth, windowHeight, visited, 0, out var ux, out var uy, out var snap))
+            return false;
+
+        var (scaleX, scaleY) = UiScale(snap.ScaleIndex, snap.LocalScaleMultiplier, windowWidth, windowHeight);
+        var cull = GameCull(windowWidth, windowHeight);
+        x = ux * scaleX + cull;
+        y = uy * scaleY;
+        width = snap.Width * scaleX;
+        height = snap.Height * scaleY;
+        localScaleMultiplier = snap.LocalScaleMultiplier;
+        scaleIndex = snap.ScaleIndex;
+        return float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(width) && float.IsFinite(height);
+    }
+
+    private bool TryResolveUiUnscaledPosition(
+        nint el,
+        int windowWidth,
+        int windowHeight,
+        HashSet<nint> visited,
+        int depth,
+        out float x,
+        out float y,
+        out UiElementSnapshot snap)
+    {
+        x = y = 0f;
+        snap = default;
+        if (el == 0 || depth > 32 || !visited.Add(el)) return false;
+        if (!TryReadUiElementSnapshot(el, out snap)) return false;
+
+        var parent = snap.Parent;
+        if (parent == 0 || parent == el)
+        {
+            x = snap.RelX;
+            y = snap.RelY;
+            return true;
+        }
+
+        if (!TryResolveUiUnscaledPosition(parent, windowWidth, windowHeight, visited, depth + 1, out var parentX, out var parentY, out var parentSnap))
+        {
+            x = snap.RelX;
+            y = snap.RelY;
+            return true;
+        }
+
+        if ((snap.Flags & (1u << Poe2.UiElement.FlagModifyPositionBit)) != 0)
+        {
+            parentX += parentSnap.PosModX;
+            parentY += parentSnap.PosModY;
+        }
+
+        if (parentSnap.ScaleIndex == snap.ScaleIndex &&
+            MathF.Abs(parentSnap.LocalScaleMultiplier - snap.LocalScaleMultiplier) < 0.0001f)
+        {
+            x = parentX + snap.RelX;
+            y = parentY + snap.RelY;
+            return true;
+        }
+
+        var (parentScaleX, parentScaleY) = UiScale(parentSnap.ScaleIndex, parentSnap.LocalScaleMultiplier, windowWidth, windowHeight);
+        var (myScaleX, myScaleY) = UiScale(snap.ScaleIndex, snap.LocalScaleMultiplier, windowWidth, windowHeight);
+        if (myScaleX <= 0f || myScaleY <= 0f) return false;
+        x = parentX * parentScaleX / myScaleX + snap.RelX;
+        y = parentY * parentScaleY / myScaleY + snap.RelY;
+        return true;
+    }
+
+    private static (float X, float Y) UiScale(byte scaleIndex, float multiplier, int windowWidth, int windowHeight)
+    {
+        multiplier = float.IsFinite(multiplier) && multiplier > 0f ? multiplier : 1f;
+        var cull = GameCull(windowWidth, windowHeight);
+        var widthScale = MathF.Max(1f, windowWidth - cull - cull) / 2560f;
+        var heightScale = MathF.Max(1f, windowHeight) / 1600f;
+        return scaleIndex switch
+        {
+            1 => (widthScale * multiplier, widthScale * multiplier),
+            2 => (heightScale * multiplier, heightScale * multiplier),
+            3 => (widthScale * multiplier, heightScale * multiplier),
+            _ => (multiplier, multiplier),
+        };
+    }
+
+    private static float GameCull(int windowWidth, int windowHeight)
+        => MathF.Max(0f, (windowWidth - windowHeight * (2560f / 1600f)) * 0.5f);
 
     /// <summary>Element visibility through its parent chain (0x0B of Flags on every UiElement).</summary>
     public bool IsVisible(nint element)
@@ -818,6 +1107,18 @@ public sealed class Poe2Live
         if (render == 0) return null;
         if (!_reader.TryReadStruct<Vector3>(render + Poe2.Render.CurrentWorldPosition, out var w)) return null;
         return w;
+    }
+
+    private float? EntityTerrainHeight(nint entity)
+    {
+        if (!_renderAddr.TryGetValue(entity, out var render))
+        {
+            render = ResolveComponent(entity, "Render");
+            _renderAddr[entity] = render;
+        }
+        if (render == 0) return null;
+        if (!_reader.TryReadStruct<float>(render + Poe2.Render.TerrainHeight, out var h)) return null;
+        return float.IsFinite(h) && MathF.Abs(h) < 100000f ? h : null;
     }
 
     private System.Numerics.Vector2? EntityGrid(nint entity)

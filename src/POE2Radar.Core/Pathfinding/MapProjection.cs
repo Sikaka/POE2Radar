@@ -36,15 +36,20 @@ public static class MapProjection
     /// then let the user multiplier apply as final calibration.
     /// </summary>
     public static float LargeMapScale(float mapWidth, float mapHeight, float zoom, float largeMapScaleMultiplier, float userScale)
+        => MapScale(mapWidth, mapHeight, zoom * MathF.Max(0.001f, largeMapScaleMultiplier), userScale);
+
+    /// <summary>
+    /// GameHelper-style map scale for a concrete map UI rectangle and zoom value.
+    /// </summary>
+    public static float MapScale(float mapWidth, float mapHeight, float zoom, float userScale)
     {
         mapWidth = MathF.Max(1f, mapWidth);
         mapHeight = MathF.Max(1f, mapHeight);
         zoom = MathF.Max(0.01f, zoom);
-        largeMapScaleMultiplier = MathF.Max(0.001f, largeMapScaleMultiplier);
         userScale = MathF.Max(0.001f, userScale);
 
         var diagonal = MathF.Sqrt(mapWidth * mapWidth + mapHeight * mapHeight);
-        return diagonal * (zoom * largeMapScaleMultiplier) * userScale / 240f;
+        return diagonal * zoom * userScale / 240f;
     }
 
     /// <summary>

@@ -53,8 +53,16 @@ public readonly record struct PerfSnapshot(
     public static readonly PerfSnapshot Empty = new();
 }
 
-/// <summary>Shared per-frame map projection state. Every map-space draw path uses this center/scale.</summary>
-public readonly record struct MapFrame(NumVec2 Center, float Scale, float Width, float Height, nint MapElement);
+/// <summary>Per-frame map projection state for a concrete game map UI rectangle.</summary>
+public readonly record struct MapFrame(
+    NumVec2 Center,
+    float Scale,
+    float Width,
+    float Height,
+    nint MapElement,
+    float PlayerTerrainHeight,
+    NumVec2 Position,
+    bool IsMinimap);
 
 /// <summary>A monster HP bar to draw, with everything expensive already decided at world rate: the style
 /// (width + packed 0xAARRGGBB fill/border colors) was resolved once when the entity set was built; only
@@ -74,7 +82,9 @@ public sealed record RenderContext(
     int WindowHeight,
     NumVec2 PlayerGrid,
     Poe2Live.MapUi Map,
+    Poe2Live.MapUi MiniMap,
     MapFrame MapFrame,
+    MapFrame MiniMapFrame,
     IReadOnlyList<Poe2Live.EntityDot> Entities,
     IReadOnlyList<Poe2Live.Landmark> Landmarks,
     uint AreaHash,

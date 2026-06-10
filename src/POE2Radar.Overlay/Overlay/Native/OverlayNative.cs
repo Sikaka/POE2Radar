@@ -111,6 +111,14 @@ internal static partial class OverlayNative
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool GetWindowRect(nint hwnd, out RECT lpRect);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetClientRect")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetClientRect(nint hwnd, out RECT lpRect);
+
+    [LibraryImport("user32.dll", EntryPoint = "ClientToScreen")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool ClientToScreen(nint hwnd, ref POINT lpPoint);
+
     [LibraryImport("user32.dll", EntryPoint = "MoveWindow")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool MoveWindow(nint hwnd, int x, int y, int nWidth, int nHeight, [MarshalAs(UnmanagedType.Bool)] bool bRepaint);

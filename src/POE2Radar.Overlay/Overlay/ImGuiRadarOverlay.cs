@@ -111,9 +111,13 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                 if (ctx.AtlasOpen)
                     DrawAtlas(dl, ctx);
                 else if (ctx.Map.IsVisible)
-                    DrawMap(dl, ctx);
+                    DrawMap(dl, ctx, ctx.MapFrame);
                 else
+                {
+                    if (ctx.MiniMap.IsVisible)
+                        DrawMap(dl, ctx, ctx.MiniMapFrame);
                     DrawPathsWorld(dl, ctx);
+                }
 
                 DrawNameplates(dl, ctx);
                 DrawPathLabels(dl, ctx);
@@ -269,65 +273,81 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
 
     // ── Map overlay ──
 
-    private void DrawMap(ImDrawListPtr dl, RenderContext ctx)
+    private void DrawMap(ImDrawListPtr dl, RenderContext ctx, MapFrame frame)
     {
         var W = ctx.WindowWidth;
         var H = ctx.WindowHeight;
-        var center = ctx.MapFrame.Center;
-        var scale = MathF.Max(0.01f, ctx.MapFrame.Scale);
+        var center = frame.Center;
+        var scale = MathF.Max(0.01f, frame.Scale);
 
-        if (ctx.ShowTerrain && ctx.Terrain is { } terrain)
+        var clipped = frame.IsMinimap && frame.Width > 1f && frame.Height > 1f;
+        if (clipped)
+            dl.PushClipRect(
+                frame.Position,
+                new NumVec2(frame.Position.X + frame.Width, frame.Position.Y + frame.Height),
+                true);
+
+        try
         {
-            if (!DrawTerrainTexture(dl, ctx, terrain, center, scale))
-                DrawTerrainEdges(dl, ctx, terrain, center, scale);
-        }
-
-        if (ctx.ShowPath)
-            DrawPathsMap(dl, ctx, center, scale);
-
-        if (ctx.ShowMonsters)
-        {
-            foreach (var e in ctx.Entities)
+            if (ctx.ShowTerrain && ctx.Terrain is { } terrain)
             {
-                var rule = ctx.Resolve?.Invoke(e);
-                if (rule is { Hide: true }) continue;
-                var p = Project(e.Grid, ctx.PlayerGrid, center, scale);
-                if (p.X < -40 || p.Y < -40 || p.X > W + 40 || p.Y > H + 40) continue;
-                var color = rule?.Color ?? EntityColor(e);
-                var radius = rule?.Size ?? EntityRadius(e);
-                DrawIconOrShape(dl, p, radius, color, rule?.Opacity ?? 0.95f, rule?.Sprite, rule?.Shape);
-                if (rule is { Label: { Length: > 0 } lbl })
-                    dl.AddText(new NumVec2(p.X + 7, p.Y - 7), ColorU32(color, 0.9f), lbl);
+                if (!DrawTerrainTexture(dl, ctx, terrain, frame, center, scale))
+                    DrawTerrainEdges(dl, ctx, terrain, frame, center, scale);
             }
-        }
 
-        foreach (var lm in ctx.Landmarks)
+            if (ctx.ShowPath)
+                DrawPathsMap(dl, ctx, frame, center, scale);
+
+            if (ctx.ShowMonsters)
+            {
+                foreach (var e in ctx.Entities)
+                {
+                    var rule = ctx.Resolve?.Invoke(e);
+                    if (rule is { Hide: true }) continue;
+                    var p = Project(e.Grid, ctx.PlayerGrid, center, scale, e.TerrainHeight - frame.PlayerTerrainHeight);
+                    if (p.X < -40 || p.Y < -40 || p.X > W + 40 || p.Y > H + 40) continue;
+                    var color = rule?.Color ?? EntityColor(e);
+                    var radius = rule?.Size ?? EntityRadius(e);
+                    DrawIconOrShape(dl, p, radius, color, rule?.Opacity ?? 0.95f, rule?.Sprite, rule?.Shape);
+                    if (rule is { Label: { Length: > 0 } lbl })
+                        dl.AddText(new NumVec2(p.X + 7, p.Y - 7), ColorU32(color, 0.9f), lbl);
+                }
+            }
+
+            foreach (var lm in ctx.Landmarks)
+            {
+                var tr = ctx.ResolveTile?.Invoke(lm.Path);
+                if (tr is { Hide: true }) continue;
+                var p = Project(lm.Center, ctx.PlayerGrid, center, scale, -frame.PlayerTerrainHeight);
+                if (p.X < -40 || p.Y < -40 || p.X > W + 40 || p.Y > H + 40) continue;
+                var lmColor = tr?.Color ?? "#F259F2";
+                var lmSize = tr?.Size ?? 4.5f;
+                DrawIconOrShape(dl, p, lmSize, lmColor, tr?.Opacity ?? 0.95f, tr?.Sprite ?? ctx.Styles.Landmark.Sprite, tr?.Shape ?? ctx.Styles.Landmark.Shape);
+                var label = tr?.Label is { Length: > 0 } rl ? rl
+                          : (ctx.UseCuratedLandmarks && lm.CuratedName is { } c ? c : lm.Name);
+                dl.AddText(new NumVec2(p.X + 7, p.Y - 7), ColorU32(lmColor, 0.9f), label);
+            }
+
+            if (ctx.ShowPlayerBlip)
+                DrawIconOrShape(dl, center, ctx.Styles.Player.Size, ctx.Styles.Player.Color, ctx.Styles.Player.Opacity, ctx.Styles.Player.Sprite, ctx.Styles.Player.Shape);
+        }
+        finally
         {
-            var tr = ctx.ResolveTile?.Invoke(lm.Path);
-            if (tr is { Hide: true }) continue;
-            var p = Project(lm.Center, ctx.PlayerGrid, center, scale);
-            if (p.X < -40 || p.Y < -40 || p.X > W + 40 || p.Y > H + 40) continue;
-            var lmColor = tr?.Color ?? "#F259F2";
-            var lmSize = tr?.Size ?? 4.5f;
-            DrawIconOrShape(dl, p, lmSize, lmColor, tr?.Opacity ?? 0.95f, tr?.Sprite ?? ctx.Styles.Landmark.Sprite, tr?.Shape ?? ctx.Styles.Landmark.Shape);
-            var label = tr?.Label is { Length: > 0 } rl ? rl
-                      : (ctx.UseCuratedLandmarks && lm.CuratedName is { } c ? c : lm.Name);
-            dl.AddText(new NumVec2(p.X + 7, p.Y - 7), ColorU32(lmColor, 0.9f), label);
+            if (clipped)
+                dl.PopClipRect();
         }
-
-        if (ctx.ShowPlayerBlip)
-            DrawIconOrShape(dl, center, ctx.Styles.Player.Size, ctx.Styles.Player.Color, ctx.Styles.Player.Opacity, ctx.Styles.Player.Sprite, ctx.Styles.Player.Shape);
     }
 
-    private bool DrawTerrainTexture(ImDrawListPtr dl, RenderContext ctx, Poe2Live.TerrainData terrain, NumVec2 center, float scale)
+    private bool DrawTerrainTexture(ImDrawListPtr dl, RenderContext ctx, Poe2Live.TerrainData terrain, MapFrame frame, NumVec2 center, float scale)
     {
         if (!_terrainTextures.TryGet(this, _textures, terrain, ctx.AreaHash, ctx.TerrainStyle, out var tex))
             return false;
 
-        var p0 = Project(new NumVec2(0, 0), ctx.PlayerGrid, center, scale);
-        var p1 = Project(new NumVec2(terrain.Width, 0), ctx.PlayerGrid, center, scale);
-        var p2 = Project(new NumVec2(terrain.Width, terrain.Height), ctx.PlayerGrid, center, scale);
-        var p3 = Project(new NumVec2(0, terrain.Height), ctx.PlayerGrid, center, scale);
+        var terrainDeltaZ = -frame.PlayerTerrainHeight;
+        var p0 = Project(new NumVec2(0, 0), ctx.PlayerGrid, center, scale, terrainDeltaZ);
+        var p1 = Project(new NumVec2(terrain.Width, 0), ctx.PlayerGrid, center, scale, terrainDeltaZ);
+        var p2 = Project(new NumVec2(terrain.Width, terrain.Height), ctx.PlayerGrid, center, scale, terrainDeltaZ);
+        var p3 = Project(new NumVec2(0, terrain.Height), ctx.PlayerGrid, center, scale, terrainDeltaZ);
 
         dl.AddImageQuad(
             tex.Id,
@@ -366,7 +386,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
         dl.AddCircleFilled(center, MathF.Max(1f, size), ColorU32(color, opacity), 16);
     }
 
-    private static void DrawTerrainEdges(ImDrawListPtr dl, RenderContext ctx, Poe2Live.TerrainData terrain, NumVec2 center, float scale)
+    private static void DrawTerrainEdges(ImDrawListPtr dl, RenderContext ctx, Poe2Live.TerrainData terrain, MapFrame frame, NumVec2 center, float scale)
     {
         var data = terrain.Walkable;
         var bytesPerRow = terrain.Width;
@@ -395,7 +415,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                 var isEdge = data[idx - 1] == 0 || data[idx + 1] == 0
                           || data[idx - bytesPerRow] == 0 || data[idx + bytesPerRow] == 0;
 
-                var p = Project(new NumVec2(x, y), ctx.PlayerGrid, center, scale);
+                var p = Project(new NumVec2(x, y), ctx.PlayerGrid, center, scale, -frame.PlayerTerrainHeight);
                 if (p.X < -8 || p.Y < -8 || p.X > W + 8 || p.Y > H + 8) continue;
 
                 if (isEdge)
@@ -405,7 +425,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                         var rightIdx = row + x + edgeStride;
                         if (rightIdx < data.Length && data[rightIdx] != 0)
                         {
-                            var pr = Project(new NumVec2(x + edgeStride, y), ctx.PlayerGrid, center, scale);
+                            var pr = Project(new NumVec2(x + edgeStride, y), ctx.PlayerGrid, center, scale, -frame.PlayerTerrainHeight);
                             if (MathF.Abs(pr.X - p.X) < 80f && MathF.Abs(pr.Y - p.Y) < 80f)
                                 dl.AddLine(p, pr, edgeCol, thickness);
                         }
@@ -416,7 +436,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                         var bottomIdx = (y + edgeStride) * bytesPerRow + x;
                         if (bottomIdx < data.Length && data[bottomIdx] != 0)
                         {
-                            var pb = Project(new NumVec2(x, y + edgeStride), ctx.PlayerGrid, center, scale);
+                            var pb = Project(new NumVec2(x, y + edgeStride), ctx.PlayerGrid, center, scale, -frame.PlayerTerrainHeight);
                             if (MathF.Abs(pb.X - p.X) < 80f && MathF.Abs(pb.Y - p.Y) < 80f)
                                 dl.AddLine(p, pb, edgeCol, thickness);
                         }
@@ -431,7 +451,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
         }
     }
 
-    private static void DrawPathsMap(ImDrawListPtr dl, RenderContext ctx, NumVec2 center, float scale)
+    private static void DrawPathsMap(ImDrawListPtr dl, RenderContext ctx, MapFrame frame, NumVec2 center, float scale)
     {
         foreach (var path in ctx.SelectedPaths)
         {
@@ -440,7 +460,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
             NumVec2? prev = null;
             foreach (var (x, y) in path.Points)
             {
-                var p = Project(new NumVec2(x, y), ctx.PlayerGrid, center, scale);
+                var p = Project(new NumVec2(x, y), ctx.PlayerGrid, center, scale, -frame.PlayerTerrainHeight);
                 if (prev is { } a) dl.AddLine(a, p, col, 2.2f);
                 prev = p;
             }
@@ -951,10 +971,10 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
         return $"{prefix}[{type}] {row.Target.Name}{dist}{status}";
     }
 
-    private static NumVec2 Project(NumVec2 cell, NumVec2 player, NumVec2 center, float scale)
+    private static NumVec2 Project(NumVec2 cell, NumVec2 player, NumVec2 center, float scale, float deltaWorldZ = 0f)
     {
         var d = cell - player;
-        var md = MapProjection.GridDeltaToMapDelta(new GameVec2 { X = d.X, Y = d.Y }, scale);
+        var md = MapProjection.GridDeltaToMapDelta(new GameVec2 { X = d.X, Y = d.Y }, scale, deltaWorldZ);
         return new NumVec2(center.X + md.X, center.Y + md.Y);
     }
 

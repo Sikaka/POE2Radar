@@ -48,8 +48,9 @@ public static class Poe2
 
     public static class UiRootStruct
     {
-        public const int UiRootPtr = 0x5A8; // (GH2)
-        public const int GameUiPtr = 0xBF0; // (GH2)
+        public const int UiRootPtr           = 0x5A8; // (GH2)
+        public const int GameUiPtr           = 0xBF0; // (GH2)
+        public const int GameUiControllerPtr = 0xBF8; // (GH2)
     }
 
     /// <summary>
@@ -138,6 +139,7 @@ public static class Poe2
     /// <summary>Render component.</summary>
     public static class Render
     {
+        public const int TerrainHeight        = 0x130; // ✓ float; ground Z used by minimap projection
         public const int CurrentWorldPosition = 0x138; // ✓ Vector3 (X,Y,Z); grid = XY / WorldToGridRatio
         public const int ModelBounds          = 0x144; // candidate (3 floats right after world pos)
     }
@@ -305,8 +307,12 @@ public static class Poe2
         public const int Children       = 0x10;  // ✓ StdVector begin (child UiElement ptrs); End @ +0x18
         public const int ChildrenEnd    = 0x18;  // ✓ StdVector end
         public const int Parent         = 0xB8;  // (community) parent UiElement; true UI root = *(UiRoot+0xB8)
+        public const int PositionModifier = 0x0E0; // (GH2) parent position modifier, used when flags bit 0x0A is set
         public const int RelativePos    = 0x118; // ✓ StdTuple2D<float> position relative to parent (varies per atlas node)
+        public const int LocalScaleMultiplier = 0x12C; // (GH2) UI element scale multiplier
+        public const int ScaleIndex      = 0x130; // (GH2) byte selecting UI scale row
         public const int Flags          = 0x180; // ✓ uint; IsVisibleLocal = bit 0x0B (toggle-diff: 0x2EF1↔0x26F1)
+        public const int FlagModifyPositionBit = 0x0A; // (GH2) add parent PositionModifier while resolving position
         public const int FlagVisibleBit = 0x0B;  // ✓ visible bit (set when shown)
         public const int SizeW          = 0x288; // ✓ float unscaled width  (atlas node = 40)
         public const int SizeH          = 0x28C; // ✓ float unscaled height (atlas node = 40)
