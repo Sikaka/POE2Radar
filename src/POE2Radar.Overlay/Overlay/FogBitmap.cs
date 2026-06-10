@@ -63,7 +63,7 @@ public sealed class FogBitmap : IDisposable
         var props = new BitmapProperties(new PixelFormat(Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Premultiplied));
         var size = new SizeI(w, h);
         var pinned = GCHandle.Alloc(pixels, GCHandleType.Pinned);
-        try { _bitmap = _renderTarget.CreateBitmap(size, pinned.AddrOfPinnedObject(), (uint)(w * 4), props); }
+        try { _bitmap = _renderTarget.CreateBitmap(size, pinned.AddrOfPinnedObject(), w * 4, props); }
         finally { pinned.Free(); }
 
         _builtForWidth = w;

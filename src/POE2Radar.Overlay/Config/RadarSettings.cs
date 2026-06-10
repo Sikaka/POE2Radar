@@ -41,6 +41,9 @@ public sealed class RadarSettings
     public string NavMenuCorner { get; set; } = "TopLeft";
     // Developer/performance tuning aid: show compact timing/read counters in the nav menu.
     public bool ShowPerfStats { get; set; } = false;
+    // Overlay renderer backend. "LayeredD2D" is the legacy UpdateLayeredWindow path; "ImGuiDx"
+    // is the experimental GameHelper-style GPU/ImGui path.
+    public string OverlayBackend { get; set; } = "LayeredD2D";
 
     // ── Persistent auto-nav: substrings matched (case-insensitive Contains) against a navigation
     //    target's MatchKey (tile path / entity metadata). On every zone change, every target whose
@@ -325,6 +328,10 @@ public sealed class TerrainSettings
     public float InteriorOpacity { get; set; } = 0.118f; // → 30/255
     public string EdgeColor { get; set; } = "#3CDCFF";
     public float EdgeOpacity { get; set; } = 0.706f;      // → 180/255
+    // ImGuiDx backend only: higher detail samples more terrain border cells (smoother, heavier).
+    public int ImGuiEdgeDetail { get; set; } = 8;
+    // ImGuiDx backend only: radius of each anti-aliased terrain edge point.
+    public float ImGuiEdgeThickness { get; set; } = 1.8f;
 }
 
 /// <summary>

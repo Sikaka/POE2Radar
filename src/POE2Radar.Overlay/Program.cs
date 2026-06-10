@@ -1,5 +1,9 @@
 using POE2Radar.Core;
 using POE2Radar.Overlay;
+using POE2Radar.Overlay.Diagnostics;
+
+CrashLog.InstallGlobalHandlers();
+CrashLog.Write("Startup", $"POE2Radar process started. BaseDirectory={AppContext.BaseDirectory}");
 
 Console.WriteLine("POE2Radar — map/radar overlay");
 Console.WriteLine("=============================");

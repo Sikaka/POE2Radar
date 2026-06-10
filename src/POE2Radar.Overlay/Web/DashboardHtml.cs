@@ -491,6 +491,8 @@ internal static class DashboardHtml
               <input class="numin" type="number" step="1" min="15" max="360" data-set="fpsCap"></div>
             <div class="row"><div class="rl">Show perf stats<small>compact FPS/read/render timings in the nav menu</small></div>
               <label class="sw"><input type="checkbox" data-set="showPerfStats"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Overlay backend<small>ImGuiDx is experimental and applies after restart</small></div>
+              <select class="numin" data-set="overlayBackend"><option>LayeredD2D</option><option>ImGuiDx</option></select></div>
           </div>
           <div class="card">
             <h3>Monster HP Bars <span class="tag">&middot; by rarity</span></h3>
@@ -537,6 +539,10 @@ internal static class DashboardHtml
                 <input type="color" class="i-color" data-tcolor="edgeColor">
                 <input type="range" class="op" min="0" max="100" data-topacity="edgeOpacity">
                 <span class="opv" data-topv="edgeOpacity">—</span></span></div>
+            <div class="row"><div class="rl">ImGui edge detail<small>higher = smoother terrain edge, more draw work</small></div>
+              <input class="numin" type="number" step="1" min="1" max="8" data-tnum="imGuiEdgeDetail"></div>
+            <div class="row"><div class="rl">ImGui edge thickness<small>visibility of terrain edge points</small></div>
+              <input class="numin" type="number" step="0.1" min="0.5" max="4" data-tnum="imGuiEdgeThickness"></div>
             <div class="row"><div class="rl hint-row">Edits rebuild the terrain bitmap; use &ldquo;Show terrain&rdquo; above to hide it entirely.</div></div>
           </div>
           <div class="card">
@@ -721,6 +727,7 @@ function renderTerrain(){
   $$('[data-tcolor]').forEach(el=>{ el.value=terrain[el.dataset.tcolor]||'#ffffff'; });
   $$('[data-topacity]').forEach(el=>{ el.value=Math.round((terrain[el.dataset.topacity]??1)*100); });
   $$('[data-topv]').forEach(el=>{ el.textContent=Math.round((terrain[el.dataset.topv]??1)*100)+'%'; });
+  $$('[data-tnum]').forEach(el=>{ const k=el.dataset.tnum; if(terrain[k]!==undefined) el.value=terrain[k]; });
 }
 function wireTerrain(){
   $$('[data-tcolor]').forEach(el=>{ el.onchange=()=>{ if(terrain){ terrain[el.dataset.tcolor]=el.value; saveTerrain(); } }; });
@@ -729,6 +736,7 @@ function wireTerrain(){
     el.oninput=()=>{ if(v) v.textContent=el.value+'%'; };
     el.onchange=()=>{ if(terrain){ terrain[k]=(+el.value)/100; saveTerrain(); } };
   });
+  $$('[data-tnum]').forEach(el=>{ el.onchange=()=>{ if(terrain){ const v=parseFloat(el.value); if(!isNaN(v)){ terrain[el.dataset.tnum]=v; saveTerrain(); } } }; });
 }
 
 function iconRow(key,label,o){

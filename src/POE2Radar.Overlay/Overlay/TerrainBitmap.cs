@@ -117,7 +117,7 @@ public sealed class TerrainBitmap : IDisposable
         var pinned = GCHandle.Alloc(pixels, GCHandleType.Pinned);
         try
         {
-            _bitmap = _renderTarget.CreateBitmap(size, pinned.AddrOfPinnedObject(), (uint)(w * 4), props);
+            _bitmap = _renderTarget.CreateBitmap(size, pinned.AddrOfPinnedObject(), w * 4, props);
         }
         finally
         {
