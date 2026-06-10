@@ -26,6 +26,8 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
     private readonly Action<string> _setCorner;
     private readonly Action _addNearest;
     private readonly Action _clearPaths;
+    private readonly TextureRegistry _textures = new();
+    private readonly TerrainTextureCache _terrainTextures = new();
 
     private bool _navMenuExpanded;
     private bool _settingsOpen;
@@ -104,6 +106,8 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
 
             if (inGame && ctx!.Active)
             {
+                IconAtlas.EnsureInitialized(this);
+
                 if (ctx.AtlasOpen)
                     DrawAtlas(dl, ctx);
                 else if (ctx.Map.IsVisible)
@@ -265,15 +269,18 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
 
     // ── Map overlay ──
 
-    private static void DrawMap(ImDrawListPtr dl, RenderContext ctx)
+    private void DrawMap(ImDrawListPtr dl, RenderContext ctx)
     {
         var W = ctx.WindowWidth;
         var H = ctx.WindowHeight;
-        var center = new NumVec2(W * 0.5f + ctx.Map.ShiftX + ctx.OffsetX, H * 0.5f + ctx.Map.ShiftY - 20f + ctx.OffsetY);
-        var scale = MathF.Max(0.01f, ctx.Map.Zoom * (H / 677f) * ctx.ScaleMul);
+        var center = ctx.MapFrame.Center;
+        var scale = MathF.Max(0.01f, ctx.MapFrame.Scale);
 
         if (ctx.ShowTerrain && ctx.Terrain is { } terrain)
-            DrawTerrainEdges(dl, ctx, terrain, center, scale);
+        {
+            if (!DrawTerrainTexture(dl, ctx, terrain, center, scale))
+                DrawTerrainEdges(dl, ctx, terrain, center, scale);
+        }
 
         if (ctx.ShowPath)
             DrawPathsMap(dl, ctx, center, scale);
@@ -288,7 +295,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                 if (p.X < -40 || p.Y < -40 || p.X > W + 40 || p.Y > H + 40) continue;
                 var color = rule?.Color ?? EntityColor(e);
                 var radius = rule?.Size ?? EntityRadius(e);
-                dl.AddCircleFilled(p, radius, ColorU32(color, rule?.Opacity ?? 0.95f), 16);
+                DrawIconOrShape(dl, p, radius, color, rule?.Opacity ?? 0.95f, rule?.Sprite, rule?.Shape);
                 if (rule is { Label: { Length: > 0 } lbl })
                     dl.AddText(new NumVec2(p.X + 7, p.Y - 7), ColorU32(color, 0.9f), lbl);
             }
@@ -302,14 +309,61 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
             if (p.X < -40 || p.Y < -40 || p.X > W + 40 || p.Y > H + 40) continue;
             var lmColor = tr?.Color ?? "#F259F2";
             var lmSize = tr?.Size ?? 4.5f;
-            dl.AddCircleFilled(p, lmSize, ColorU32(lmColor, tr?.Opacity ?? 0.95f), 12);
+            DrawIconOrShape(dl, p, lmSize, lmColor, tr?.Opacity ?? 0.95f, tr?.Sprite ?? ctx.Styles.Landmark.Sprite, tr?.Shape ?? ctx.Styles.Landmark.Shape);
             var label = tr?.Label is { Length: > 0 } rl ? rl
                       : (ctx.UseCuratedLandmarks && lm.CuratedName is { } c ? c : lm.Name);
             dl.AddText(new NumVec2(p.X + 7, p.Y - 7), ColorU32(lmColor, 0.9f), label);
         }
 
         if (ctx.ShowPlayerBlip)
-            dl.AddCircleFilled(center, 5.5f, ColorU32(77, 242, 255, 1f), 18);
+            DrawIconOrShape(dl, center, ctx.Styles.Player.Size, ctx.Styles.Player.Color, ctx.Styles.Player.Opacity, ctx.Styles.Player.Sprite, ctx.Styles.Player.Shape);
+    }
+
+    private bool DrawTerrainTexture(ImDrawListPtr dl, RenderContext ctx, Poe2Live.TerrainData terrain, NumVec2 center, float scale)
+    {
+        if (!_terrainTextures.TryGet(this, _textures, terrain, ctx.AreaHash, ctx.TerrainStyle, out var tex))
+            return false;
+
+        var p0 = Project(new NumVec2(0, 0), ctx.PlayerGrid, center, scale);
+        var p1 = Project(new NumVec2(terrain.Width, 0), ctx.PlayerGrid, center, scale);
+        var p2 = Project(new NumVec2(terrain.Width, terrain.Height), ctx.PlayerGrid, center, scale);
+        var p3 = Project(new NumVec2(0, terrain.Height), ctx.PlayerGrid, center, scale);
+
+        dl.AddImageQuad(
+            tex.Id,
+            p0, p1, p2, p3,
+            new NumVec2(0, 0),
+            new NumVec2(1, 0),
+            new NumVec2(1, 1),
+            new NumVec2(0, 1),
+            0xFFFFFFFF);
+        return true;
+    }
+
+    private static void DrawIconOrShape(
+        ImDrawListPtr dl,
+        NumVec2 center,
+        float size,
+        string color,
+        float opacity,
+        SpriteIconRef? sprite,
+        string? shape)
+    {
+        if (IconAtlas.TryGet(sprite, out var icon) || IconAtlas.TryGet(shape, out icon))
+        {
+            var half = MathF.Max(1f, size * Math.Clamp(sprite?.Scale ?? 1f, 0.2f, 4f));
+            var tint = ColorU32(color, opacity);
+            dl.AddImage(
+                icon.TextureId,
+                new NumVec2(center.X - half, center.Y - half),
+                new NumVec2(center.X + half, center.Y + half),
+                icon.UV0,
+                icon.UV1,
+                tint);
+            return;
+        }
+
+        dl.AddCircleFilled(center, MathF.Max(1f, size), ColorU32(color, opacity), 16);
     }
 
     private static void DrawTerrainEdges(ImDrawListPtr dl, RenderContext ctx, Poe2Live.TerrainData terrain, NumVec2 center, float scale)
@@ -429,12 +483,16 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
 
     // ── HP bars (world-space nameplates) ──
 
-    private static void DrawNameplates(ImDrawListPtr dl, RenderContext ctx)
+    private void DrawNameplates(ImDrawListPtr dl, RenderContext ctx)
     {
         if (ctx.CameraMatrix is not { Length: >= 16 } m) return;
         if (ctx.HpBarTargets is not { Count: > 0 } bars) return;
         float W = ctx.WindowWidth, H = ctx.WindowHeight;
         var bh = ctx.HpBars.Height;
+        TextureRegistry.TextureHandle fullTex = default;
+        TextureRegistry.TextureHandle hollowTex = default;
+        var useFullTex = ctx.HpBars.UseTextures && _textures.TryGetOutputTexture(this, "full_bar.png", out fullTex);
+        var useHollowTex = ctx.HpBars.UseTextures && _textures.TryGetOutputTexture(this, "hollow_bar.png", out hollowTex);
 
         foreach (var t in bars)
         {
@@ -458,7 +516,22 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                 fillCol = ColorU32(255, 51, 51, 0.95f);
             else
                 fillCol = ColorU32((byte)((t.Fill >> 16) & 0xFF), (byte)((t.Fill >> 8) & 0xFF), (byte)(t.Fill & 0xFF), ((t.Fill >> 24) & 0xFF) / 255f);
-            dl.AddRectFilled(new NumVec2(bx, by), new NumVec2(bx + bw * Math.Clamp(t.Frac, 0f, 1f), by + bh), fillCol);
+
+            var hpFrac = Math.Clamp(t.Frac, 0f, 1f);
+            if (useFullTex)
+                DrawPartialImage(dl, fullTex, bx, by, bw, bh, hpFrac, fillCol);
+            else
+                dl.AddRectFilled(new NumVec2(bx, by), new NumVec2(bx + bw * hpFrac, by + bh), fillCol);
+
+            var esFrac = Math.Clamp(t.EsFrac, 0f, 1f);
+            if (esFrac > 0.005f)
+            {
+                var esCol = ColorU32(ctx.HpBars.EnergyShieldColor, 0.86f);
+                if (useHollowTex)
+                    DrawPartialImage(dl, hollowTex, bx, by, bw, bh, esFrac, esCol);
+                else
+                    dl.AddRect(new NumVec2(bx, by), new NumVec2(bx + bw * esFrac, by + bh), esCol, 0, 0, 1.5f);
+            }
 
             if (t.BorderWidth > 0f)
             {
@@ -466,6 +539,27 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
                 dl.AddRect(new NumVec2(bx, by), new NumVec2(bx + bw, by + bh), borderCol, 0, 0, t.BorderWidth);
             }
         }
+    }
+
+    private static void DrawPartialImage(
+        ImDrawListPtr dl,
+        TextureRegistry.TextureHandle texture,
+        float x,
+        float y,
+        float width,
+        float height,
+        float fraction,
+        uint tint)
+    {
+        fraction = Math.Clamp(fraction, 0f, 1f);
+        if (fraction <= 0f) return;
+        dl.AddImage(
+            texture.Id,
+            new NumVec2(x, y),
+            new NumVec2(x + width * fraction, y + height),
+            new NumVec2(0, 0),
+            new NumVec2(fraction, 1),
+            tint);
     }
 
     // ── Path endpoint labels ──

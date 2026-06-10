@@ -28,4 +28,10 @@
     <EmbeddedResource Include="Web\default_watched.json" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Overlay\icons.png" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Overlay\Textures\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Textures\*.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

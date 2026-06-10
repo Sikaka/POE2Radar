@@ -59,6 +59,7 @@ public sealed class RadarSettings
     public bool HpBarUnique { get; set; } = true;
 
     // ── Projection calibration (PageUp/Down = scale, arrows = offset, Home = reset). ──
+    public float LargeMapScaleMultiplier { get; set; } = 0.1738f;
     public float ScaleMul { get; set; } = 1.0f;
     public float OffX { get; set; } = 0f;
     public float OffY { get; set; } = 0f;
@@ -245,6 +246,32 @@ public sealed class RadarSettings
 /// <see cref="Shape"/> is one of Circle/Triangle/Star/Diamond/Plus/Square (anything else falls back
 /// to Circle when rendered); <see cref="Color"/> is <c>#RRGGBB</c>; <see cref="Opacity"/> is 0..1.
 /// </summary>
+public sealed class SpriteIconRef
+{
+    public string Sheet { get; set; } = "icons.png";
+    public int Col { get; set; }
+    public int Row { get; set; }
+    public int CellSize { get; set; } = 64;
+    public float Scale { get; set; } = 1f;
+
+    public SpriteIconRef Clone() => new()
+    {
+        Sheet = Sheet,
+        Col = Col,
+        Row = Row,
+        CellSize = CellSize,
+        Scale = Scale,
+    };
+
+    public static SpriteIconRef Cell(int col, int row, float scale = 1f, int cellSize = 64) => new()
+    {
+        Col = col,
+        Row = row,
+        Scale = scale,
+        CellSize = cellSize,
+    };
+}
+
 public sealed class IconStyle
 {
     public bool Enabled { get; set; } = true;
@@ -252,11 +279,12 @@ public sealed class IconStyle
     public string Color { get; set; } = "#FFFFFF";
     public float Opacity { get; set; } = 1.0f;
     public float Size { get; set; } = 3.0f;
+    public SpriteIconRef? Sprite { get; set; }
 
     public IconStyle() { }
-    public IconStyle(string shape, string color, float opacity, float size)
+    public IconStyle(string shape, string color, float opacity, float size, SpriteIconRef? sprite = null)
     {
-        Shape = shape; Color = color; Opacity = opacity; Size = size;
+        Shape = shape; Color = color; Opacity = opacity; Size = size; Sprite = sprite;
     }
 }
 
@@ -280,6 +308,7 @@ public sealed class MechanicStyle
     public string Color { get; set; } = "#FFFFFF";
     public float Opacity { get; set; } = 1.0f;
     public float Size { get; set; } = 6.0f;
+    public SpriteIconRef? Sprite { get; set; }
 }
 
 /// <summary>
@@ -292,6 +321,7 @@ public sealed class MechanicStyle
 /// </summary>
 public sealed class HpBarSettings
 {
+    public bool UseTextures { get; set; } = true;
     public float Height { get; set; } = 5f;
     public float OffsetX { get; set; } = 0f;
     public float OffsetY { get; set; } = -30f; // px relative to the mob's screen position (neg = up)
@@ -309,6 +339,7 @@ public sealed class HpBarSettings
     public string BorderColorMagic { get; set; } = "#73A6FF";
     public string BorderColorRare { get; set; } = "#FFD926";
     public string BorderColorUnique { get; set; } = "#FF7300";
+    public string EnergyShieldColor { get; set; } = "#73E6FF";
 }
 
 /// <summary>
@@ -337,21 +368,21 @@ public sealed class TerrainSettings
 public sealed class RadarStyles
 {
     // Monster dots by rarity.
-    public IconStyle MonsterNormal { get; set; } = new("Circle",   "#FF3333", 0.95f, 2.6f);
-    public IconStyle MonsterMagic  { get; set; } = new("Diamond",  "#73A6FF", 0.97f, 3.4f);
-    public IconStyle MonsterRare   { get; set; } = new("Triangle", "#FFD926", 1.00f, 5.5f);
-    public IconStyle MonsterUnique { get; set; } = new("Star",     "#FF7300", 1.00f, 6.5f);
+    public IconStyle MonsterNormal { get; set; } = new("Circle",   "#FF3333", 0.95f, 6.0f, SpriteIconRef.Cell(0, 14));
+    public IconStyle MonsterMagic  { get; set; } = new("Diamond",  "#73A6FF", 0.97f, 7.0f, SpriteIconRef.Cell(4, 57));
+    public IconStyle MonsterRare   { get; set; } = new("Triangle", "#FFD926", 1.00f, 8.0f, SpriteIconRef.Cell(4, 57));
+    public IconStyle MonsterUnique { get; set; } = new("Star",     "#FF7300", 1.00f, 9.0f, SpriteIconRef.Cell(6, 57));
 
     // Other entity categories.
-    public IconStyle Player        { get; set; } = new("Circle",  "#4DF2FF", 1.00f, 3.0f);
-    public IconStyle Npc           { get; set; } = new("Plus",    "#FFD933", 0.95f, 4.0f);
-    public IconStyle ChestRare     { get; set; } = new("Square",  "#FFD926", 0.95f, 5.0f);
-    public IconStyle ChestUnique   { get; set; } = new("Square",  "#FF7300", 0.95f, 5.0f);
-    public IconStyle Transition    { get; set; } = new("Diamond", "#66FF99", 0.95f, 4.5f);
-    public IconStyle Poi           { get; set; } = new("Circle",  "#8CBFFF", 0.70f, 3.0f);
+    public IconStyle Player        { get; set; } = new("Circle",  "#4DF2FF", 1.00f, 7.0f, SpriteIconRef.Cell(2, 0));
+    public IconStyle Npc           { get; set; } = new("Plus",    "#FFD933", 0.95f, 7.0f, SpriteIconRef.Cell(3, 0));
+    public IconStyle ChestRare     { get; set; } = new("Square",  "#FFD926", 0.95f, 8.0f, SpriteIconRef.Cell(4, 48));
+    public IconStyle ChestUnique   { get; set; } = new("Square",  "#FF7300", 0.95f, 8.0f, SpriteIconRef.Cell(8, 38));
+    public IconStyle Transition    { get; set; } = new("Diamond", "#66FF99", 0.95f, 8.0f, SpriteIconRef.Cell(1, 37));
+    public IconStyle Poi           { get; set; } = new("Circle",  "#8CBFFF", 0.70f, 7.0f, SpriteIconRef.Cell(12, 44));
 
     // Tile landmarks (shape marker + text label at the group centroid).
-    public IconStyle Landmark      { get; set; } = new("Diamond", "#F259F2", 1.00f, 5.0f);
+    public IconStyle Landmark      { get; set; } = new("Diamond", "#F259F2", 1.00f, 8.0f, SpriteIconRef.Cell(1, 37));
 
     // Metadata-matched overrides (first enabled match wins). Seeded with common PoE2 mechanics.
     public List<MechanicStyle> Mechanics { get; set; } = new()
@@ -363,16 +394,16 @@ public sealed class RadarStyles
         // dir-qualified key hits only "Expedition2/Expedition2Encounter" (NOT the "/Objects/...Crack"
         // path), and the Other gate keeps it off the monsters. ("ExpeditionEncounter" was also dead —
         // the real path is "Expedition2Encounter" with a digit, so that key matched nothing.)
-        new() { Name = "Expedition", Match = new() { "Expedition2/Expedition2Encounter" }, Categories = new() { "Other" }, Shape = "Plus", Color = "#26E6D9", Opacity = 1f, Size = 7f },
-        new() { Name = "Ritual",     Match = new() { "Ritual" },                            Shape = "Star",     Color = "#FF3355", Opacity = 1f, Size = 7f },
-        new() { Name = "Breach",     Match = new() { "Breach" },                            Shape = "Diamond",  Color = "#A64DFF", Opacity = 1f, Size = 7f },
+        new() { Name = "Expedition", Match = new() { "Expedition2/Expedition2Encounter" }, Categories = new() { "Other" }, Shape = "Plus", Color = "#26E6D9", Opacity = 1f, Size = 9f, Sprite = SpriteIconRef.Cell(5, 38) },
+        new() { Name = "Ritual",     Match = new() { "Ritual" },                            Shape = "Star",     Color = "#FF3355", Opacity = 1f, Size = 9f, Sprite = SpriteIconRef.Cell(10, 44) },
+        new() { Name = "Breach",     Match = new() { "Breach" },                            Shape = "Diamond",  Color = "#A64DFF", Opacity = 1f, Size = 9f, Sprite = SpriteIconRef.Cell(11, 44) },
         // Match the league-strongbox DIRECTORY only ("Metadata/Chests/StrongBoxes/…") and gate to
         // Chest. The bare "Strongbox" term was too broad twice over: it tagged the box's spawned Vaal
         // guards (…Strongbox monsters — now excluded by the Chest gate) AND ordinary area chests that
         // merely carry "Strongbox" in their name (e.g. Chests/KedgeBayChests/KedgeBayChestStrongbox).
         // "StrongBoxes" hits the real boxes (BasicStrongboxLow lives under it) but not those.
-        new() { Name = "Strongbox",  Match = new() { "StrongBoxes" }, Categories = new() { "Chest" }, Shape = "Square", Color = "#FFB300", Opacity = 1f, Size = 6f },
-        new() { Name = "Essence",    Match = new() { "Essence" },                           Shape = "Triangle", Color = "#33E0FF", Opacity = 1f, Size = 7f },
-        new() { Name = "Shrine",     Match = new() { "Shrine" },                            Shape = "Star",     Color = "#7DFF7D", Opacity = 1f, Size = 6f },
+        new() { Name = "Strongbox",  Match = new() { "StrongBoxes" }, Categories = new() { "Chest" }, Shape = "Square", Color = "#FFB300", Opacity = 1f, Size = 8f, Sprite = SpriteIconRef.Cell(8, 38) },
+        new() { Name = "Essence",    Match = new() { "Essence" },                           Shape = "Triangle", Color = "#33E0FF", Opacity = 1f, Size = 9f, Sprite = SpriteIconRef.Cell(7, 45) },
+        new() { Name = "Shrine",     Match = new() { "Shrine" },                            Shape = "Star",     Color = "#7DFF7D", Opacity = 1f, Size = 8f, Sprite = SpriteIconRef.Cell(7, 0) },
     };
 }

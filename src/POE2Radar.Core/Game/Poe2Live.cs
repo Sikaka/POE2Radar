@@ -60,7 +60,18 @@ public sealed class Poe2Live
         public float HpFraction => HpMax > 0 ? Math.Clamp((float)HpCur / HpMax, 0f, 1f) : 1f;
     }
 
-    public readonly record struct MapUi(bool IsVisible, float ShiftX, float ShiftY, float Zoom);
+    public readonly record struct MapUi(
+        bool IsVisible,
+        float ShiftX,
+        float ShiftY,
+        float DefaultShiftX,
+        float DefaultShiftY,
+        float Zoom,
+        nint Element,
+        float CenterX,
+        float CenterY,
+        float Width,
+        float Height);
 
     /// <summary>A static tile-based landmark: a notable terrain feature and its grid centroid.
     /// <paramref name="CuratedName"/> is an optional curated friendly label (null when none matches);
@@ -643,6 +654,8 @@ public sealed class Poe2Live
     private readonly HashSet<nint> _everHidden = new();  // elements observed with visible-bit clear
     private readonly HashSet<nint> _everVisible = new(); // elements observed with visible-bit set
     private nint _mapCacheKey = -1;
+    private nint _selectedMapEl;
+    private int _selectedMapMisses;
 
     /// <summary>
     /// Map UI state. The MapUiElements (DefaultShift=(0,-20), Zoom=0.5) are discovered once per area
@@ -662,7 +675,25 @@ public sealed class Poe2Live
             _mapEls.Clear();
             _everHidden.Clear();
             _everVisible.Clear();
+            _selectedMapEl = 0;
+            _selectedMapMisses = 0;
             DiscoverMapElements(inGameState);
+        }
+
+        if (_selectedMapEl != 0)
+        {
+            if (TryReadMapElement(_selectedMapEl, out var selected))
+            {
+                _selectedMapMisses = 0;
+                if (selected.IsVisible) _everVisible.Add(_selectedMapEl); else _everHidden.Add(_selectedMapEl);
+                return selected;
+            }
+
+            if (++_selectedMapMisses < 4)
+                return default;
+
+            _selectedMapEl = 0;
+            _selectedMapMisses = 0;
         }
 
         var visibleCount = 0;
@@ -670,26 +701,27 @@ public sealed class Poe2Live
         var sawToggler = false; var togglerVisible = false; var haveTogglerUi = false; MapUi togglerUi = default;
         foreach (var el in _mapEls)
         {
-            if (!TryReadMapElement(el, out var vis, out var sx, out var sy, out var zoom)) continue;
-            if (vis) { _everVisible.Add(el); visibleCount++; } else _everHidden.Add(el);
-            if (!any) { any = true; anyUi = new MapUi(vis, sx, sy, zoom); }
+            if (!TryReadMapElement(el, out var ui)) continue;
+            if (ui.IsVisible) { _everVisible.Add(el); visibleCount++; } else _everHidden.Add(el);
+            if (!any || ui.IsVisible) { any = true; anyUi = ui; }
 
-            // A genuine toggler has been seen in BOTH states; permanently-on/off elements never qualify.
             if (_everVisible.Contains(el) && _everHidden.Contains(el))
             {
                 sawToggler = true;
-                if (vis) togglerVisible = true;
-                if (vis || !haveTogglerUi) { togglerUi = new MapUi(vis, sx, sy, zoom); haveTogglerUi = true; }
+                if (ui.IsVisible) togglerVisible = true;
+                if (ui.IsVisible || !haveTogglerUi) { togglerUi = ui; haveTogglerUi = true; }
             }
         }
         if (!any) return default;
 
         if (sawToggler)
-            return new MapUi(togglerVisible, togglerUi.ShiftX, togglerUi.ShiftY, togglerUi.Zoom);
+        {
+            _selectedMapEl = togglerUi.Element;
+            _selectedMapMisses = 0;
+            return togglerUi with { IsVisible = togglerVisible };
+        }
 
-        // No toggle observed yet this area: the open minimap lights up one element beyond the
-        // always-on baseline, so >=2 visible ≈ open. Superseded as soon as a real toggle is seen.
-        return new MapUi(visibleCount >= 2, anyUi.ShiftX, anyUi.ShiftY, anyUi.Zoom);
+        return anyUi with { IsVisible = visibleCount >= 2 };
     }
 
     private void DiscoverMapElements(nint inGameState)
@@ -721,22 +753,36 @@ public sealed class Poe2Live
         }
     }
 
-    private bool TryReadMapElement(nint el, out bool visible, out float shiftX, out float shiftY, out float zoom)
+    private bool TryReadMapElement(nint el, out MapUi ui)
     {
-        visible = false; shiftX = shiftY = zoom = 0;
+        ui = default;
+        if (!_reader.TryReadStruct<float>(el + Poe2.MapUiElement.DefaultShift, out var dsx)) return false;
         if (!_reader.TryReadStruct<float>(el + Poe2.MapUiElement.DefaultShift + 4, out var dsy) || dsy != -20f) return false;
-        _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Shift, out shiftX);
-        _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Shift + 4, out shiftY);
-        _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Zoom, out zoom);
-        visible = IsVisible(el);
+        _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Shift, out var shiftX);
+        _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Shift + 4, out var shiftY);
+        _reader.TryReadStruct<float>(el + Poe2.MapUiElement.Zoom, out var zoom);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var width);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var height);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var relX);
+        _reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var relY);
+        ui = new MapUi(IsVisible(el), shiftX, shiftY, dsx, dsy, zoom, el, relX + width * 0.5f, relY + height * 0.5f, width, height);
         return true;
     }
 
-    /// <summary>Element's own visibility bit (0x0B of Flags). Note: full visibility is hierarchical.</summary>
+    /// <summary>Element visibility through its parent chain (0x0B of Flags on every UiElement).</summary>
     public bool IsVisible(nint element)
     {
-        if (!_reader.TryReadStruct<uint>(element + Poe2.UiElement.Flags, out var flags)) return false;
-        return (flags & (1u << Poe2.UiElement.FlagVisibleBit)) != 0;
+        var el = element;
+        var visited = 0;
+        while (el != 0 && visited++ < 64)
+        {
+            if (!_reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var flags)) return false;
+            if ((flags & (1u << Poe2.UiElement.FlagVisibleBit)) == 0) return false;
+            if (!_reader.TryReadStruct<nint>(el + Poe2.UiElement.Parent, out var parent)) break;
+            if (parent == el) break;
+            el = parent;
+        }
+        return true;
     }
 
     // ── internals ───────────────────────────────────────────────────────────
@@ -746,13 +792,19 @@ public sealed class Poe2Live
     /// re-enumeration). This is what lets HP bars track a moving monster smoothly at the full frame rate
     /// while the expensive entity enumeration stays at world rate. Two tiny reads (12-byte position, 8-byte
     /// vital). Returns false if the entity isn't in the current area's cache or the position read fails.</summary>
-    public bool TryLiveBar(nint entity, out Vector3 world, out int hpCur, out int hpMax)
+    public bool TryLiveBar(nint entity, out Vector3 world, out int hpCur, out int hpMax, out int esCur, out int esMax)
     {
-        world = default; hpCur = 0; hpMax = 0;
+        world = default; hpCur = 0; hpMax = 0; esCur = 0; esMax = 0;
         if (!_renderAddr.TryGetValue(entity, out var render) || render == 0) return false;
         if (!_reader.TryReadStruct<Vector3>(render + Poe2.Render.CurrentWorldPosition, out world)) return false;
         if (_lifeAddr.TryGetValue(entity, out var life) && life != 0
             && _reader.TryReadStruct<VitalStruct>(life + _healthOff, out var v)) { hpCur = v.Current; hpMax = v.Max; }
+        if (_esOffKnown && _lifeAddr.TryGetValue(entity, out life) && life != 0
+            && _reader.TryReadStruct<VitalStruct>(life + _esOff, out var es) && es.LooksValid())
+        {
+            esCur = es.Current;
+            esMax = es.Max;
+        }
         return true;
     }
 

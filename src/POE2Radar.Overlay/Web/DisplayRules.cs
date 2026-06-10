@@ -35,6 +35,7 @@ public sealed class DisplayRule
     public string Color { get; set; } = "#FFFFFF";
     public float Opacity { get; set; } = 1f;
     public float Size { get; set; } = 3f;
+    public SpriteIconRef? Sprite { get; set; }
     public string? Label { get; set; }                      // optional text label drawn next to the dot
     public bool Navigable { get; set; }                     // reserved (Phase 2): qualifies as a nav target
 }
@@ -200,7 +201,7 @@ public sealed class DisplayRules
             {
                 Name = m.Name, Enabled = m.Enabled,
                 Categories = new(m.Categories ?? new()), Match = new(m.Match ?? new()),
-                Shape = m.Shape, Color = m.Color, Opacity = m.Opacity, Size = m.Size,
+                Shape = m.Shape, Color = m.Color, Opacity = m.Opacity, Size = m.Size, Sprite = m.Sprite?.Clone(),
             });
 
         // 4) Category defaults.
@@ -208,7 +209,7 @@ public sealed class DisplayRules
         {
             Name = $"Monster · {rarity}", Enabled = s.Enabled && showMonsters,
             Categories = new() { "Monster" }, Reaction = "Hostile", Rarity = rarity,
-            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size,
+            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size, Sprite = s.Sprite?.Clone(),
         });
         Mon("Unique", st.MonsterUnique);
         Mon("Rare",   st.MonsterRare);
@@ -218,7 +219,7 @@ public sealed class DisplayRules
         void Cat(string name, string category, string? rarity, IconStyle s) => rules.Add(new DisplayRule
         {
             Name = name, Enabled = s.Enabled, Categories = new() { category }, Rarity = rarity,
-            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size,
+            Shape = s.Shape, Color = s.Color, Opacity = s.Opacity, Size = s.Size, Sprite = s.Sprite?.Clone(),
         });
         Cat("Player",        "Player",     null,     st.Player);
         Cat("NPC",           "Npc",        null,     st.Npc);
@@ -231,7 +232,7 @@ public sealed class DisplayRules
         {
             Name = "Point of Interest", Enabled = st.Poi.Enabled,
             Categories = new() { "Object", "Other" }, Poi = "Yes",
-            Shape = st.Poi.Shape, Color = st.Poi.Color, Opacity = st.Poi.Opacity, Size = st.Poi.Size,
+            Shape = st.Poi.Shape, Color = st.Poi.Color, Opacity = st.Poi.Opacity, Size = st.Poi.Size, Sprite = st.Poi.Sprite?.Clone(),
         });
 
         return rules;

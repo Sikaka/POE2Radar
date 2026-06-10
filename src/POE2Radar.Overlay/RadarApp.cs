@@ -477,8 +477,9 @@ public sealed class RadarApp : IDisposable
             _hpFrame.Clear();
             foreach (var spec in _hpSpecs)
             {
-                if (!_live.TryLiveBar(spec.Entity, out var w, out var cur, out var max) || max <= 0 || cur <= 0) continue;
-                _hpFrame.Add(new HpBarTarget(w, Math.Clamp((float)cur / max, 0f, 1f), spec.Width, spec.Fill, spec.BorderWidth, spec.Border));
+                if (!_live.TryLiveBar(spec.Entity, out var w, out var cur, out var max, out var esCur, out var esMax) || max <= 0 || cur <= 0) continue;
+                var esFrac = esMax > 0 && esCur > 0 ? Math.Clamp((float)esCur / esMax, 0f, 1f) : 0f;
+                _hpFrame.Add(new HpBarTarget(w, Math.Clamp((float)cur / max, 0f, 1f), esFrac, spec.Width, spec.Fill, spec.BorderWidth, spec.Border));
             }
             hpBarsMs = ElapsedMs(hpBarsStart);
         }
@@ -499,6 +500,7 @@ public sealed class RadarApp : IDisposable
         var atlasProj = AtlasProjection(); // resolution-correct (auto from window height) or manual calib
         var windowWidth = OverlayWidth;
         var windowHeight = OverlayHeight;
+        var mapFrame = BuildMapFrame(map, windowWidth, windowHeight);
         var ctx = new RenderContext(
             InGame: inGame,
             Active: drawActive,
@@ -506,6 +508,7 @@ public sealed class RadarApp : IDisposable
             WindowHeight: windowHeight,
             PlayerGrid: player,
             Map: map,
+            MapFrame: mapFrame,
             Entities: _entities,
             Landmarks: _landmarks,
             AreaHash: _areaHash,
@@ -581,6 +584,28 @@ public sealed class RadarApp : IDisposable
 
     private static double ElapsedMs(long start)
         => Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+
+    private MapFrame BuildMapFrame(Poe2Live.MapUi map, int windowWidth, int windowHeight)
+    {
+        var hasUiFrame =
+            map.Width > 16f && map.Height > 16f &&
+            map.CenterX > 0f && map.CenterY > 0f &&
+            map.CenterX < windowWidth * 1.5f && map.CenterY < windowHeight * 1.5f;
+        var mapWidth = hasUiFrame ? map.Width : MathF.Max(1f, windowWidth);
+        var mapHeight = hasUiFrame ? map.Height : MathF.Max(1f, windowHeight);
+        var centerX = hasUiFrame ? map.CenterX : windowWidth * 0.5f;
+        var centerY = hasUiFrame ? map.CenterY : windowHeight * 0.5f;
+        var center = new NumVec2(
+            centerX + map.ShiftX + map.DefaultShiftX + _settings.OffX,
+            centerY + map.ShiftY + map.DefaultShiftY + _settings.OffY);
+        var scale = global::POE2Radar.Core.Pathfinding.MapProjection.LargeMapScale(
+            mapWidth,
+            mapHeight,
+            map.Zoom > 0f ? map.Zoom : 1f,
+            _settings.LargeMapScaleMultiplier,
+            _settings.ScaleMul);
+        return new MapFrame(center, scale, mapWidth, mapHeight, map.Element);
+    }
 
     /// <summary>Decide which monsters get an HP bar and precompute each bar's style (width + packed
     /// fill/border colours) at WORLD rate. This is the work that used to run per entity per render frame in
