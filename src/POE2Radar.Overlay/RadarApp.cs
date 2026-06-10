@@ -141,6 +141,7 @@ public sealed class RadarApp : IDisposable
     // from this list on the tick thread only — mutators (in-game + API) just edit _selectedIds.
     private readonly object _navLock = new();
     private readonly List<string> _selectedIds = new();                  // selected target ids (order drives the color slot)
+    private readonly HashSet<string> _autoSelectedIds = new();           // ids added by live auto-path (not manual F6/legend)
     private List<SelectedPath> _selectedPaths = new();                   // one route per selected target (from trackers)
     private bool _selectionCapWarned;                                    // log the "cap reached" notice once
     private nint _navTargetsArea = -1;                                   // AreaInstance the auto-nav was applied for
@@ -266,6 +267,7 @@ public sealed class RadarApp : IDisposable
         _live.CuratedLookup = _landmarkStore.Lookup;
         _landmarkStoreGen = _landmarkStore.Generation;
         Console.WriteLine($"Hidden entities: {_hidden.Count} pattern(s); display rules: {_displayRules.Count}");
+        _imguiOverlay?.AttachEntityStores(_displayRules, _hidden);
         _api = new ApiServer(() => _state, _settings, GetNavSelection, ToggleNavTarget, ClearNavSelection,
                              _hidden, _displayRules, _landmarkStore, CurrentTilePaths, AtlasJson, SetAtlasSelection,
                              SetAtlasHighlight, VersionJson, _settings.ApiPort);
@@ -414,6 +416,8 @@ public sealed class RadarApp : IDisposable
                 // published RadarState (HTTP API) all see the same filtered list. Cull by metadata.
                 if (_hidden.Count > 0)
                     _entities = _entities.Where(e => !_hidden.IsHidden(e.Metadata)).ToList();
+                if (_settings.EntityDrawRadiusGrid > 0)
+                    _entities = _entities.Where(e => NumVec2.Distance(e.Grid, player) <= _settings.EntityDrawRadiusGrid).ToList();
                 // If the user edited the custom landmark patterns, drop the cached per-area scan so it
                 // rebuilds with the new patterns this tick (otherwise it only refreshes on zone change).
                 if (_landmarkPatterns.Generation != _landmarkGen)
@@ -467,6 +471,8 @@ public sealed class RadarApp : IDisposable
                 // they're already gone from the map + nav-target list, but the still-present (faded)
                 // entity would otherwise keep resolving, so the route would keep pathing to it.
                 PruneCompletedTargets();
+
+                AutoSelectNavigable(player);
 
                 // Per-tick route maintenance (draw-only, NO A* on this thread). For each selected
                 // target: cheaply advance its cursor; fire a BACKGROUND replan only on a real trigger.
@@ -963,6 +969,7 @@ public sealed class RadarApp : IDisposable
             if (_selectionAreaHash != 0) RememberZoneSelection(_selectionAreaHash, _selectedIds);
 
             _selectedIds.Clear();
+            _autoSelectedIds.Clear();
             _selectionCapWarned = false;
             _selectionAreaHash = _areaHash;
 
@@ -986,7 +993,10 @@ public sealed class RadarApp : IDisposable
                 {
                     if (_selectedIds.Count >= MaxSelectedTargets) break;
                     if (t.AutoPath && !_selectedIds.Contains(t.Id))
+                    {
                         _selectedIds.Add(t.Id);
+                        if (_settings.AutoPathNavigable) _autoSelectedIds.Add(t.Id);
+                    }
                 }
             }
             count = _selectedIds.Count;
@@ -1016,9 +1026,71 @@ public sealed class RadarApp : IDisposable
                 if (!id.StartsWith("e:", StringComparison.Ordinal) || !uint.TryParse(id.AsSpan(2), out var eid))
                     return false;
                 foreach (var e in _entities)
-                    if (e.Id == eid) return e.IconComplete; // present → prune iff completed; else keep
+                    if (e.Id == eid)
+                    {
+                        if (e.IconComplete) _autoSelectedIds.Remove(id);
+                        return e.IconComplete; // present → prune iff completed; else keep
+                    }
                 return false; // absent (out of range) → keep; it may return
             });
+        }
+    }
+
+    /// <summary>When <see cref="RadarSettings.AutoPathNavigable"/> is on, keep the selection filled with
+    /// nearest Auto-path-flagged targets (up to the cap). Manual selections (F6/legend/API) are preserved;
+    /// ids the user removed stay out until they leave and re-enter the navigable set.</summary>
+    private void AutoSelectNavigable(NumVec2 player)
+    {
+        if (!_settings.AutoPathNavigable)
+        {
+            if (_autoSelectedIds.Count == 0) return;
+            lock (_navLock)
+            {
+                foreach (var id in _autoSelectedIds)
+                    _selectedIds.Remove(id);
+                _autoSelectedIds.Clear();
+            }
+            return;
+        }
+
+        var candidates = _navTargets
+            .Where(t => t.AutoPath)
+            .OrderBy(t => NumVec2.DistanceSquared(t.Grid, player))
+            .Select(t => t.Id)
+            .ToList();
+
+        lock (_navLock)
+        {
+            var manual = new HashSet<string>(_selectedIds.Where(id => !_autoSelectedIds.Contains(id)));
+            var desiredAuto = new List<string>();
+            foreach (var id in candidates)
+            {
+                if (manual.Contains(id)) continue;
+                if (manual.Count + desiredAuto.Count >= MaxSelectedTargets) break;
+                desiredAuto.Add(id);
+            }
+
+            var desiredAutoSet = new HashSet<string>(desiredAuto);
+            foreach (var id in _autoSelectedIds.ToList())
+            {
+                if (!desiredAutoSet.Contains(id))
+                {
+                    _selectedIds.Remove(id);
+                    _autoSelectedIds.Remove(id);
+                }
+            }
+
+            foreach (var id in desiredAuto)
+            {
+                if (_selectedIds.Contains(id))
+                {
+                    if (!manual.Contains(id)) _autoSelectedIds.Add(id);
+                    continue;
+                }
+                if (_selectedIds.Count >= MaxSelectedTargets) break;
+                _selectedIds.Add(id);
+                _autoSelectedIds.Add(id);
+            }
         }
     }
 
@@ -1082,6 +1154,7 @@ public sealed class RadarApp : IDisposable
         {
             wasEmpty = _selectedIds.Count == 0;
             _selectedIds.Clear();
+            _autoSelectedIds.Clear();
             _selectionCapWarned = false;
         }
         if (!wasEmpty) Console.WriteLine("\nPath targets: cleared");
@@ -1109,6 +1182,7 @@ public sealed class RadarApp : IDisposable
         {
             if (_selectedIds.Remove(id))
             {
+                _autoSelectedIds.Remove(id);
                 _selectionCapWarned = false;
                 changed = true;
             }

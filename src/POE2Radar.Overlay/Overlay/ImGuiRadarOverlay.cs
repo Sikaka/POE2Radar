@@ -4,6 +4,7 @@ using POE2Radar.Core.Game;
 using POE2Radar.Core.Pathfinding;
 using POE2Radar.Overlay.Config;
 using POE2Radar.Overlay.Diagnostics;
+using POE2Radar.Overlay.Web;
 using NumVec2 = System.Numerics.Vector2;
 using GameVec2 = POE2Radar.Core.Game.Vector2;
 
@@ -32,6 +33,11 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
     private bool _navMenuExpanded;
     private bool _settingsOpen;
     private string _navMenuCorner = "TopLeft";
+    private DisplayRules? _displayRules;
+    private HiddenEntities? _hidden;
+    private int _rulesUiGeneration = -1;
+    private List<DisplayRule> _rulesUiCache = new();
+    private string _hidePatternInput = "";
 
     private static readonly Vector4[] PathPalette =
     [
@@ -66,6 +72,14 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
     public int OverlayHeight => _height;
 
     public void UpdateContext(RenderContext ctx) => _ctx = ctx;
+
+    public void AttachEntityStores(DisplayRules displayRules, HiddenEntities hidden)
+    {
+        _displayRules = displayRules;
+        _hidden = hidden;
+        _rulesUiGeneration = -1;
+        _rulesUiCache.Clear();
+    }
 
     public void UpdateSettings(RadarSettings settings)
     {
@@ -740,6 +754,7 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
         if (ImGui.BeginTabBar("SettingsTabs"))
         {
             if (ImGui.BeginTabItem("Radar")) { DrawRadarTab(s); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Entities")) { DrawEntitiesTab(s); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("HP Bars")) { DrawHpBarsTab(s); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Flask")) { DrawFlaskTab(s); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Atlas")) { DrawAtlasTab(s); ImGui.EndTabItem(); }
@@ -747,6 +762,137 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
         }
 
         ImGui.End();
+    }
+
+    private void DrawEntitiesTab(RadarSettings s)
+    {
+        if (ImGui.CollapsingHeader("Detection & Auto-path", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            int radius = s.EntityDrawRadiusGrid;
+            ImGui.SliderInt("Detection radius (grid)", ref radius, 0, 500, radius == 0 ? "Unlimited" : "%d");
+            s.EntityDrawRadiusGrid = radius;
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort))
+                ImGui.SetTooltip("Max grid distance from player for entity dots, nav targets, and API list. 0 = no limit.");
+
+            bool ap = s.AutoPathNavigable;
+            if (ImGui.Checkbox("Auto-path to flagged entities", ref ap))
+            {
+                s.AutoPathNavigable = ap;
+                if (ap) s.ShowPath = true;
+            }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort))
+                ImGui.SetTooltip("Continuously path to nearest targets whose display rule has Auto-path enabled (web dashboard or display_rules.json). Manual F6/legend picks are preserved.");
+        }
+
+        if (_displayRules is null)
+        {
+            ImGui.TextDisabled("Display rules not wired yet.");
+            return;
+        }
+
+        if (ImGui.CollapsingHeader("Display rules", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            var gen = _displayRules.Generation;
+            if (gen != _rulesUiGeneration)
+            {
+                _rulesUiGeneration = gen;
+                _rulesUiCache = _displayRules.All.ToList();
+            }
+
+            ImGui.TextDisabled("Advanced matchers / reorder: web dashboard (F12) or display_rules.json");
+            ImGui.BeginChild("EntityRulesList", new NumVec2(0, 180));
+
+            for (var i = 0; i < _rulesUiCache.Count; i++)
+            {
+                var rule = _rulesUiCache[i];
+                ImGui.PushID(i);
+
+                bool en = rule.Enabled;
+                if (ImGui.Checkbox("##en", ref en) && en != rule.Enabled)
+                {
+                    var c = CloneDisplayRule(rule);
+                    c.Enabled = en;
+                    _displayRules.Update(i, c);
+                }
+                ImGui.SameLine();
+                ImGui.TextUnformatted(rule.Name.Length > 0 ? rule.Name : $"Rule {i}");
+
+                bool hide = rule.Hide;
+                ImGui.SameLine();
+                if (ImGui.Checkbox("Hide", ref hide) && hide != rule.Hide)
+                {
+                    var c = CloneDisplayRule(rule);
+                    c.Hide = hide;
+                    _displayRules.Update(i, c);
+                }
+
+                var col = ParseHexColor(rule.Color);
+                ImGui.SameLine();
+                if (ImGui.ColorEdit3("##col", ref col, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel))
+                {
+                    var c = CloneDisplayRule(rule);
+                    c.Color = FormatHexColor3(col);
+                    _displayRules.Update(i, c);
+                }
+
+                float op = rule.Opacity;
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(72f);
+                if (ImGui.DragFloat("##op", ref op, 0.01f, 0f, 1f, "α%.2f") && MathF.Abs(op - rule.Opacity) > 0.0001f)
+                {
+                    var c = CloneDisplayRule(rule);
+                    c.Opacity = op;
+                    _displayRules.Update(i, c);
+                }
+
+                float sz = rule.Size;
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(72f);
+                if (ImGui.DragFloat("##sz", ref sz, 0.1f, 1f, 24f, "sz%.1f") && MathF.Abs(sz - rule.Size) > 0.0001f)
+                {
+                    var c = CloneDisplayRule(rule);
+                    c.Size = sz;
+                    _displayRules.Update(i, c);
+                }
+
+                bool nav = rule.Navigable;
+                ImGui.SameLine();
+                if (ImGui.Checkbox("Auto-path", ref nav) && nav != rule.Navigable)
+                {
+                    var c = CloneDisplayRule(rule);
+                    c.Navigable = nav;
+                    _displayRules.Update(i, c);
+                }
+
+                ImGui.PopID();
+            }
+
+            ImGui.EndChild();
+        }
+
+        if (_hidden is null) return;
+
+        if (ImGui.CollapsingHeader("Hidden by metadata", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            ImGui.SetNextItemWidth(-80f);
+            ImGui.InputText("##hidepat", ref _hidePatternInput, 256);
+            ImGui.SameLine();
+            if (ImGui.Button("Add") && _hidePatternInput.Trim().Length > 0)
+            {
+                _hidden.Add(_hidePatternInput.Trim());
+                _hidePatternInput = "";
+            }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort))
+                ImGui.SetTooltip("Substring or glob (* ?) — matched entities never appear on radar or nav list");
+
+            foreach (var p in _hidden.All)
+            {
+                ImGui.TextUnformatted(p);
+                ImGui.SameLine();
+                if (ImGui.SmallButton($"Remove##{p}"))
+                    _hidden.Remove(p);
+            }
+        }
     }
 
     private void DrawRadarTab(RadarSettings s)
@@ -1029,4 +1175,39 @@ public sealed class ImGuiRadarOverlay : ClickableTransparentOverlay.Overlay
     {
         return ImGui.ColorConvertFloat4ToU32(new Vector4(r / 255f, g / 255f, b / 255f, Math.Clamp(a, 0f, 1f)));
     }
+
+    private static DisplayRule CloneDisplayRule(DisplayRule r) => new()
+    {
+        Enabled = r.Enabled,
+        Name = r.Name,
+        Categories = new List<string>(r.Categories),
+        Match = new List<string>(r.Match),
+        Rarity = r.Rarity,
+        Reaction = r.Reaction,
+        Life = r.Life,
+        Chest = r.Chest,
+        Poi = r.Poi,
+        Encounter = r.Encounter,
+        Hide = r.Hide,
+        Shape = r.Shape,
+        Color = r.Color,
+        Opacity = r.Opacity,
+        Size = r.Size,
+        Sprite = r.Sprite?.Clone(),
+        Label = r.Label,
+        Navigable = r.Navigable,
+    };
+
+    private static System.Numerics.Vector3 ParseHexColor(string hex)
+    {
+        if (hex.Length == 7 && hex[0] == '#'
+            && byte.TryParse(hex.AsSpan(1, 2), System.Globalization.NumberStyles.HexNumber, null, out var r)
+            && byte.TryParse(hex.AsSpan(3, 2), System.Globalization.NumberStyles.HexNumber, null, out var g)
+            && byte.TryParse(hex.AsSpan(5, 2), System.Globalization.NumberStyles.HexNumber, null, out var b))
+            return new System.Numerics.Vector3(r / 255f, g / 255f, b / 255f);
+        return new System.Numerics.Vector3(1f, 1f, 1f);
+    }
+
+    private static string FormatHexColor3(System.Numerics.Vector3 v)
+        => $"#{(int)(v.X * 255):X2}{(int)(v.Y * 255):X2}{(int)(v.Z * 255):X2}";
 }

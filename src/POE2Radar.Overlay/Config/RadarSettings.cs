@@ -24,6 +24,13 @@ public sealed class RadarSettings
     //    them (more markers). 0 disables bridging (only directly-touching tiles group). ──
     public int LandmarkClusterGap { get; set; } = 2;
 
+    // ── Entity gather/draw radius (grid cells from player). 0 = unlimited (game network bubble only). ──
+    public int EntityDrawRadiusGrid { get; set; } = 0;
+
+    // ── Live auto-path: each world tick, fill remaining path slots with nearest targets whose display
+    //    rule has Auto-path (Navigable) enabled. Manual F6/legend selections are never overridden. ──
+    public bool AutoPathNavigable { get; set; } = false;
+
     // ── Radar display toggles. ──
     public bool ShowMonsters { get; set; } = true;
     public bool ShowTerrain { get; set; } = true;
