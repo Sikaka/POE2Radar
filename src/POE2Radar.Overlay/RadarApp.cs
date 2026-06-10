@@ -128,6 +128,10 @@ public sealed class RadarApp : IDisposable
     private readonly BackgroundReplanner _replanner = new();
     private readonly Dictionary<string, RouteTracker> _trackers = new(); // one per selected id; OWNED by the tick thread
     private List<NavTarget> _navTargets = new();                         // unified targets, rebuilt each world tick
+    private readonly record struct TargetSnapshot(string Label, NumVec2 Grid, bool IsEntity, DateTime LastSeenUtc);
+    private readonly record struct TargetSnapshotKey(uint AreaHash, string TargetId);
+    private readonly object _targetSnapshotLock = new();
+    private readonly Dictionary<TargetSnapshotKey, TargetSnapshot> _targetSnapshots = new();
     // The ONLY state shared with the HTTP/API thread. Every read/iterate/mutate of _selectedIds is
     // done under _navLock (snapshot to a local, then work outside the lock). Trackers are reconciled
     // from this list on the tick thread only — mutators (in-game + API) just edit _selectedIds.
@@ -145,6 +149,7 @@ public sealed class RadarApp : IDisposable
     private readonly List<uint> _zoneOrder = new();                      // insertion order, for LRU eviction
     private uint _selectionAreaHash;
     private const int MaxRememberedZones = 64;
+    private const int MaxTargetSnapshots = 512;
 
     // ── Collapsible "POE2Radar" navigation menu widget state (drawn always-on; persisted corner). ──
     private bool _navMenuExpanded;                                       // dropdown open? (default collapsed)
@@ -366,6 +371,7 @@ public sealed class RadarApp : IDisposable
 
                 // Rebuild the unified navigation-target list (tiles + entity POIs) for this tick.
                 _navTargets = BuildNavTargets(player);
+                RefreshTargetSnapshots(_navTargets);
 
                 // On a zone change: drop the (now-stale) selection, then apply the persistent
                 // auto-nav patterns against the new zone's targets. Keyed off the AreaInstance
@@ -795,6 +801,57 @@ public sealed class RadarApp : IDisposable
         return targets;
     }
 
+    /// <summary>Remember the friendly label + last known grid for currently visible nav targets, so a
+    /// selected entity keeps a readable label and route after it leaves the live entity set.</summary>
+    private void RefreshTargetSnapshots(IReadOnlyList<NavTarget> targets)
+    {
+        if (targets.Count == 0) return;
+
+        var now = DateTime.UtcNow;
+        var selected = SnapshotSelection();
+        var selectedSet = selected.Count == 0
+            ? null
+            : new HashSet<TargetSnapshotKey>(selected.Select(TargetSnapshotKeyFor));
+
+        lock (_targetSnapshotLock)
+        {
+            foreach (var t in targets)
+                _targetSnapshots[TargetSnapshotKeyFor(t.Id)] = new TargetSnapshot(t.Name, t.Grid, t.IsEntity, now);
+            PruneTargetSnapshotsLocked(selectedSet);
+        }
+    }
+
+    private void RememberTargetSnapshot(string id, string label, NumVec2 grid, bool isEntity)
+    {
+        if (string.IsNullOrEmpty(id)) return;
+        lock (_targetSnapshotLock)
+            _targetSnapshots[TargetSnapshotKeyFor(id)] = new TargetSnapshot(label, grid, isEntity, DateTime.UtcNow);
+    }
+
+    private bool TryGetTargetSnapshot(string id, out TargetSnapshot snapshot)
+    {
+        lock (_targetSnapshotLock)
+            return _targetSnapshots.TryGetValue(TargetSnapshotKeyFor(id), out snapshot);
+    }
+
+    private TargetSnapshotKey TargetSnapshotKeyFor(string id) => new(_areaHash, id);
+
+    private void PruneTargetSnapshotsLocked(HashSet<TargetSnapshotKey>? selected)
+    {
+        if (_targetSnapshots.Count <= MaxTargetSnapshots) return;
+
+        var over = _targetSnapshots.Count - MaxTargetSnapshots;
+        var removable = _targetSnapshots
+            .Where(kv => selected is null || !selected.Contains(kv.Key))
+            .OrderBy(kv => kv.Value.LastSeenUtc)
+            .Take(over)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        foreach (var id in removable)
+            _targetSnapshots.Remove(id);
+    }
+
     /// <summary>Zone change: remember the leaving zone's selection (by its instance hash), then either
     /// RESTORE the selection we previously had for the zone we're entering (so a town round-trip keeps
     /// your pathing) or — on a first visit — seed it from the persistent auto-nav patterns. Trackers are
@@ -1020,8 +1077,8 @@ public sealed class RadarApp : IDisposable
     /// <item>"t:&lt;path&gt;" → the landmark in <see cref="_landmarks"/> whose Path matches; grid = Center.</item>
     /// <item>"e:&lt;id&gt;" → the entity in <see cref="_entities"/> whose Id matches; grid = Grid.</item>
     /// </list>
-    /// Returns false if the id is malformed or the target isn't present this tick (despawned / other
-    /// zone) — callers keep the id selected and simply skip planning until it resolves.
+    /// If the live target is absent this tick (out of read range / temporarily despawned), falls back
+    /// to the cached last-known grid so the already-selected route keeps drawing.
     /// </summary>
     private bool TryResolveTargetGrid(string id, out NumVec2 grid)
     {
@@ -1032,16 +1089,31 @@ public sealed class RadarApp : IDisposable
         {
             var key = id[2..];
             foreach (var lm in _landmarks)
-                if (lm.Key == key) { grid = lm.Center; return true; }
-            return false;
+            {
+                if (lm.Key != key) continue;
+                grid = lm.Center;
+                RememberTargetSnapshot(id, LandmarkLabel(lm), grid, isEntity: false);
+                return true;
+            }
+        }
+        else if (id.StartsWith("e:", StringComparison.Ordinal))
+        {
+            if (uint.TryParse(id[2..], out var entityId))
+            {
+                foreach (var e in _entities)
+                {
+                    if (e.Id != entityId) continue;
+                    grid = e.Grid;
+                    RememberTargetSnapshot(id, EntityLabel(e.Metadata), grid, isEntity: true);
+                    return true;
+                }
+            }
         }
 
-        if (id.StartsWith("e:", StringComparison.Ordinal))
+        if (TryGetTargetSnapshot(id, out var cached))
         {
-            if (!uint.TryParse(id[2..], out var entityId)) return false;
-            foreach (var e in _entities)
-                if (e.Id == entityId) { grid = e.Grid; return true; }
-            return false;
+            grid = cached.Grid;
+            return true;
         }
 
         return false;
@@ -1109,15 +1181,21 @@ public sealed class RadarApp : IDisposable
         {
             if (!_trackers.TryGetValue(selected[i], out var tracker)) continue;
             var pts = tracker.CurrentPoints;
-            if (pts.Count > 0) paths.Add(new SelectedPath(Math.Min(i, MaxSelectedTargets - 1), pts));
+            if (pts.Count > 0)
+            {
+                var id = selected[i];
+                paths.Add(new SelectedPath(Math.Min(i, MaxSelectedTargets - 1), id, TargetLabel(id), pts));
+            }
         }
         _selectedPaths = paths;
     }
 
-    /// <summary>Display label for a selected id (its NavTarget name if still present, else the raw id).</summary>
+    /// <summary>Display label for a selected id: live nav target first, cached last-known label second,
+    /// raw id only when the target was never observed.</summary>
     private string TargetLabel(string id)
     {
         foreach (var t in _navTargets) if (t.Id == id) return t.Name;
+        if (TryGetTargetSnapshot(id, out var cached)) return cached.Label;
         return id;
     }
 

@@ -45,6 +45,23 @@ public sealed class OverlayRenderer : IDisposable
     /// <summary>The color a guidance path (and its legend swatch) draws in, by selection-order color slot.</summary>
     private static Color4 PathColor(int slot) => PathPalette[((slot % PathPalette.Length) + PathPalette.Length) % PathPalette.Length];
 
+    private const float PathLabelMaxW = 220f;
+    private const float PathLabelMinW = 72f;
+    private const float PathLabelRowH = 16f;
+    private const float PathLabelPadX = 4f;
+    private const float PathLabelPadY = 2f;
+    private const float PathLabelOffsetX = 10f;
+    private const float PathLabelOffsetY = -9f;
+    private const float PathLabelMargin = 4f;
+    private const float PathLabelSwatch = 7f;
+    private const float PathLabelTextX = PathLabelPadX + PathLabelSwatch + 4f;
+
+    private readonly record struct PathLabelAnchor(
+        int ColorSlot,
+        string Text,
+        float Width,
+        Vortice.RawRectF Rect);
+
     /// <summary>
     /// Screen rectangles of the interactive navigation-menu widget, rebuilt every frame the widget
     /// draws (and cleared when the overlay isn't Active/InGame). RadarApp hit-tests pointer clicks
@@ -318,6 +335,7 @@ public sealed class OverlayRenderer : IDisposable
     {
         if (ctx.CameraMatrix is not { } m || ctx.SelectedPaths.Count == 0) return;
         float W = ctx.WindowWidth, H = ctx.WindowHeight;
+        var labels = new List<PathLabelAnchor>(ctx.SelectedPaths.Count);
 
         // Ground plane height = the player entity's world Z (paths sit at the player's feet).
         var z = 0f;
@@ -332,17 +350,22 @@ public sealed class OverlayRenderer : IDisposable
             NumVec2? prev = null;
             foreach (var (gx, gy) in path.Points)
             {
-                float wx = gx * GridConstants.GridToWorld, wy = gy * GridConstants.GridToWorld;
-                var cw = wx * m[3] + wy * m[7] + z * m[11] + m[15];
-                if (cw <= 0.0001f) { prev = null; continue; } // waypoint behind camera — break the line
-                var cxp = wx * m[0] + wy * m[4] + z * m[8] + m[12];
-                var cyp = wx * m[1] + wy * m[5] + z * m[9] + m[13];
-                var p = new NumVec2((cxp / cw / 2f + 0.5f) * W, (0.5f - cyp / cw / 2f) * H);
+                if (!TryProjectWorldPathPoint((gx, gy), m, z, W, H, out var p))
+                {
+                    prev = null;
+                    continue; // waypoint behind camera — break the line
+                }
                 if (prev is { } pr) rt.DrawLine(pr, p, _bPath, 3f);
                 rt.FillEllipse(new Ellipse(p, 4f, 4f), _bPath);
                 prev = p;
             }
+
+            var end = path.Points[path.Points.Count - 1];
+            if (TryProjectWorldPathPoint(end, m, z, W, H, out var anchor))
+                AddPathLabel(labels, path, anchor, W, H);
         }
+
+        DrawPathLabels(rt, labels, W, H);
     }
 
     /// <summary>
@@ -523,9 +546,10 @@ public sealed class OverlayRenderer : IDisposable
     /// </summary>
     private void DrawPaths(ID2D1RenderTarget rt, RenderContext ctx, NumVec2 player, NumVec2 center, float scale)
     {
+        var labels = new List<PathLabelAnchor>(ctx.SelectedPaths.Count);
         foreach (var path in ctx.SelectedPaths)
         {
-            if (path.Points.Count < 2) continue;
+            if (path.Points.Count == 0) continue;
             _bPath!.Color = PathColor(path.ColorSlot);
             NumVec2? prev = null;
             foreach (var (gx, gy) in path.Points)
@@ -534,7 +558,151 @@ public sealed class OverlayRenderer : IDisposable
                 if (prev is { } pr) rt.DrawLine(pr, p, _bPath, 2.4f);
                 prev = p;
             }
+
+            var end = path.Points[path.Points.Count - 1];
+            AddPathLabel(labels, path, Project(new NumVec2(end.x, end.y), player, center, scale), ctx.WindowWidth, ctx.WindowHeight);
         }
+        DrawPathLabels(rt, labels, ctx.WindowWidth, ctx.WindowHeight);
+    }
+
+    private static bool TryProjectWorldPathPoint((int x, int y) point, float[] m, float z, float W, float H, out NumVec2 screen)
+    {
+        float wx = point.x * GridConstants.GridToWorld, wy = point.y * GridConstants.GridToWorld;
+        var cw = wx * m[3] + wy * m[7] + z * m[11] + m[15];
+        if (cw <= 0.0001f)
+        {
+            screen = default;
+            return false;
+        }
+
+        var cxp = wx * m[0] + wy * m[4] + z * m[8] + m[12];
+        var cyp = wx * m[1] + wy * m[5] + z * m[9] + m[13];
+        screen = new NumVec2((cxp / cw / 2f + 0.5f) * W, (0.5f - cyp / cw / 2f) * H);
+        return true;
+    }
+
+    private void AddPathLabel(List<PathLabelAnchor> labels, SelectedPath path, NumVec2 anchor, float W, float H)
+    {
+        var text = string.IsNullOrWhiteSpace(path.Label) ? path.TargetId : path.Label;
+        var rowText = PathLabelText(path.ColorSlot, text);
+        var width = PathLabelWidth(rowText, W);
+        var height = PathLabelPadY * 2f + PathLabelRowH;
+        var left = anchor.X + PathLabelOffsetX;
+        var top = anchor.Y + PathLabelOffsetY;
+        ClampRectOrigin(ref left, ref top, width, height, W, H);
+        labels.Add(new PathLabelAnchor(path.ColorSlot, text, width,
+            new Vortice.RawRectF(left, top, left + width, top + height)));
+    }
+
+    private void DrawPathLabels(ID2D1RenderTarget rt, List<PathLabelAnchor> labels, float W, float H)
+    {
+        if (labels.Count == 0) return;
+
+        var groups = BuildPathLabelGroups(labels);
+        foreach (var group in groups)
+        {
+            group.Sort(static (a, b) => a.ColorSlot.CompareTo(b.ColorSlot));
+
+            var width = 0f;
+            var left = group[0].Rect.Left;
+            var top = group[0].Rect.Top;
+            for (var i = 0; i < group.Count; i++)
+            {
+                width = Math.Max(width, group[i].Width);
+                left = Math.Min(left, group[i].Rect.Left);
+                top = Math.Min(top, group[i].Rect.Top);
+            }
+
+            width = Math.Min(width, Math.Max(24f, W - PathLabelMargin * 2f));
+            var height = PathLabelPadY * 2f + group.Count * PathLabelRowH;
+            ClampRectOrigin(ref left, ref top, width, height, W, H);
+
+            var panel = new Vortice.RawRectF(left, top, left + width, top + height);
+            rt.FillRectangle(panel, _bPanel!);
+            _bStyle!.Color = WithAlpha(ColText, 0.22f);
+            rt.DrawRectangle(panel, _bStyle, 1f);
+
+            for (var i = 0; i < group.Count; i++)
+            {
+                var label = group[i];
+                var color = PathColor(label.ColorSlot);
+                var y = top + PathLabelPadY + i * PathLabelRowH;
+                var swatchTop = y + (PathLabelRowH - PathLabelSwatch) * 0.5f;
+
+                _bPath!.Color = color;
+                rt.FillRectangle(new Vortice.RawRectF(
+                    left + PathLabelPadX,
+                    swatchTop,
+                    left + PathLabelPadX + PathLabelSwatch,
+                    swatchTop + PathLabelSwatch), _bPath);
+
+                _bStyle.Color = color;
+                rt.DrawText(
+                    PathLabelText(label.ColorSlot, label.Text),
+                    _tf!,
+                    new Rect(left + PathLabelTextX, y, left + width - PathLabelPadX, y + PathLabelRowH),
+                    _bStyle,
+                    DrawTextOptions.Clip);
+            }
+        }
+    }
+
+    private static List<List<PathLabelAnchor>> BuildPathLabelGroups(List<PathLabelAnchor> labels)
+    {
+        var groups = new List<List<PathLabelAnchor>>();
+        var used = new bool[labels.Count];
+
+        for (var i = 0; i < labels.Count; i++)
+        {
+            if (used[i]) continue;
+
+            var group = new List<PathLabelAnchor> { labels[i] };
+            used[i] = true;
+
+            var added = true;
+            while (added)
+            {
+                added = false;
+                for (var j = 0; j < labels.Count; j++)
+                {
+                    if (used[j] || !OverlapsAny(group, labels[j].Rect)) continue;
+                    group.Add(labels[j]);
+                    used[j] = true;
+                    added = true;
+                }
+            }
+
+            groups.Add(group);
+        }
+
+        return groups;
+    }
+
+    private static bool OverlapsAny(List<PathLabelAnchor> group, Vortice.RawRectF rect)
+    {
+        for (var i = 0; i < group.Count; i++)
+            if (Intersects(group[i].Rect, rect)) return true;
+        return false;
+    }
+
+    private static bool Intersects(Vortice.RawRectF a, Vortice.RawRectF b)
+        => a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
+
+    private static string PathLabelText(int colorSlot, string label) => $"{colorSlot + 1}. {label}";
+
+    private static float PathLabelWidth(string rowText, float W)
+    {
+        var available = Math.Max(24f, W - PathLabelMargin * 2f);
+        var estimated = PathLabelTextX + rowText.Length * 7.2f + PathLabelPadX;
+        return Math.Min(Math.Clamp(estimated, PathLabelMinW, PathLabelMaxW), available);
+    }
+
+    private static void ClampRectOrigin(ref float left, ref float top, float width, float height, float W, float H)
+    {
+        var maxLeft = Math.Max(PathLabelMargin, W - PathLabelMargin - width);
+        var maxTop = Math.Max(PathLabelMargin, H - PathLabelMargin - height);
+        left = Math.Clamp(left, PathLabelMargin, maxLeft);
+        top = Math.Clamp(top, PathLabelMargin, maxTop);
     }
 
     // ── Navigation-menu widget geometry (all in client/device pixels at 96 DPI). ──

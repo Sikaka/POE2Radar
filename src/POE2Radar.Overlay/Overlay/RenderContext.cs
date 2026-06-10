@@ -18,8 +18,9 @@ public readonly record struct NavTarget(string Id, string Name, NumVec2 Grid, st
 public readonly record struct LegendEntry(NavTarget Target, int ColorSlot, bool IsSelected);
 
 /// <summary>One selected target's smoothed A* route: the selection-order color slot (0..7) used to pick
-/// its draw/legend color and the smoothed grid-cell waypoints. Empty <see cref="Points"/> = no path.</summary>
-public readonly record struct SelectedPath(int ColorSlot, IReadOnlyList<(int x, int y)> Points);
+/// its draw/legend color, the target id/label to show at the destination, and the smoothed grid-cell
+/// waypoints. Empty <see cref="Points"/> = no path.</summary>
+public readonly record struct SelectedPath(int ColorSlot, string TargetId, string Label, IReadOnlyList<(int x, int y)> Points);
 
 /// <summary>A monster HP bar to draw, with everything expensive already decided at world rate: the style
 /// (width + packed 0xAARRGGBB fill/border colors) was resolved once when the entity set was built; only
