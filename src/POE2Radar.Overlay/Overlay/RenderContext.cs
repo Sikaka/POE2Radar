@@ -53,11 +53,22 @@ public readonly record struct PerfSnapshot(
     public static readonly PerfSnapshot Empty = new();
 }
 
+/// <summary>Per-frame map projection state for a concrete game map UI rectangle.</summary>
+public readonly record struct MapFrame(
+    NumVec2 Center,
+    float Scale,
+    float Width,
+    float Height,
+    nint MapElement,
+    float PlayerTerrainHeight,
+    NumVec2 Position,
+    bool IsMinimap);
+
 /// <summary>A monster HP bar to draw, with everything expensive already decided at world rate: the style
 /// (width + packed 0xAARRGGBB fill/border colors) was resolved once when the entity set was built; only
 /// <see cref="World"/> + <see cref="Frac"/> are refreshed live every render frame (cheap per-entity reads)
 /// so the bar tracks the moving monster smoothly. The renderer just projects + fills.</summary>
-public readonly record struct HpBarTarget(Vector3 World, float Frac, float Width, uint Fill, float BorderWidth, uint Border);
+public readonly record struct HpBarTarget(Vector3 World, float Frac, float EsFrac, float Width, uint Fill, float BorderWidth, uint Border);
 
 /// <summary>One atlas node to highlight. <see cref="X"/>/<see cref="Y"/> are the node's canvas-space
 /// RelativePos; the renderer projects them to screen via the atlas transform (scale + offset).</summary>
@@ -71,6 +82,9 @@ public sealed record RenderContext(
     int WindowHeight,
     NumVec2 PlayerGrid,
     Poe2Live.MapUi Map,
+    Poe2Live.MapUi MiniMap,
+    MapFrame MapFrame,
+    MapFrame MiniMapFrame,
     IReadOnlyList<Poe2Live.EntityDot> Entities,
     IReadOnlyList<Poe2Live.Landmark> Landmarks,
     uint AreaHash,

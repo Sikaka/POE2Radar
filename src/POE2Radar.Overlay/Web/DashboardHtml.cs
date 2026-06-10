@@ -225,6 +225,8 @@ internal static class DashboardHtml
   input[type=range].op{width:78px; accent-color:var(--gold); flex:none}
   .opv{font-size:10px; color:var(--ink-faint); width:30px; text-align:right}
   .numin.sz{width:56px}
+  .sprctl{display:flex; align-items:center; gap:4px; flex-wrap:wrap; color:var(--ink-faint); font-size:10px}
+  .sprctl .numin.sprin{width:46px; padding:4px 5px; font-size:10px}
   .mechrow{border:1px solid var(--line-soft); border-radius:3px; background:var(--panel2); padding:10px 12px; margin-bottom:8px}
   .mechrow .top{display:flex; align-items:center; gap:9px; margin-bottom:8px}
   .mechrow .top input.mname{flex:1; font-family:inherit; font-size:12px; color:var(--ink); background:#0c0a07; border:1px solid var(--line); border-radius:2px; padding:5px 9px}
@@ -519,9 +521,11 @@ internal static class DashboardHtml
               <input class="numin" type="number" step="0.5" min="0" max="20" data-hp="borderUnique">
             </div>
             <div class="hpshared">
+              <label>Textures<input type="checkbox" data-hpcheck="useTextures"></label>
               <label>Height<input class="numin" type="number" step="1" min="1" max="30" data-hp="height"></label>
               <label>Offset X<input class="numin" type="number" step="1" data-hp="offsetX"></label>
               <label>Offset Y<input class="numin" type="number" step="1" data-hp="offsetY"></label>
+              <label>ES color<input type="color" class="i-color" data-hpcolor="energyShieldColor"></label>
             </div>
             <div class="row"><div class="rl hint-row">Bar fill follows the monster icon color; set border color &amp; thickness per rarity (thickness 0 = no border). Offset Y negative = above the mob.</div></div>
           </div>
@@ -545,6 +549,8 @@ internal static class DashboardHtml
           </div>
           <div class="card">
             <h3>Map Calibration</h3>
+            <div class="row"><div class="rl">Large-map scale base<small>GameHelper-style diagonal/zoom multiplier</small></div>
+              <input class="numin" type="number" step="0.0001" min="0.01" data-set="largeMapScaleMultiplier"></div>
             <div class="row"><div class="rl">Scale multiplier<small>projection scale of the map overlay</small></div>
               <input class="numin" type="number" step="0.01" data-set="scaleMul"></div>
             <div class="row"><div class="rl">Offset X</div><input class="numin" type="number" step="1" data-set="offX"></div>
@@ -658,6 +664,25 @@ const ICON_KEYS=[
   ['poi','Point of Interest'],['landmark','Landmark']];
 const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const pct=o=>Math.round((o==null?1:o)*100);
+const spriteOf=o=>o.sprite||(o.sprite={sheet:'icons.png',col:0,row:0,cellSize:64,scale:1});
+function spriteCtl(o){
+  const s=o.sprite||{};
+  return `<span class="sprctl" title="icons.png sprite cell">
+    <span>col</span><input class="numin sprin" type="number" min="0" step="1" data-spr="col" value="${s.col??0}">
+    <span>row</span><input class="numin sprin" type="number" min="0" step="1" data-spr="row" value="${s.row??0}">
+    <span>cell</span><input class="numin sprin" type="number" min="16" step="1" data-spr="cellSize" value="${s.cellSize??64}">
+    <span>x</span><input class="numin sprin" type="number" min="0.2" step="0.1" data-spr="scale" value="${s.scale??1}">
+  </span>`;
+}
+function wireSprite(row,o,save){
+  row.querySelectorAll('[data-spr]').forEach(el=>el.onchange=()=>{
+    const v=parseFloat(el.value); if(isNaN(v)) return;
+    const s=spriteOf(o), k=el.dataset.spr;
+    s[k]=k==='scale'?v:Math.round(v);
+    s.sheet='icons.png';
+    save();
+  });
+}
 
 /* ── SVG icon library (served by /api/icons): drives both the in-page previews and the picker grid. ── */
 let ICONS=[]; const ICONMAP={};
@@ -711,10 +736,12 @@ const saveHpBars=()=>{ if(hpBars) saveSetting('hpBars',hpBars); };
 function renderHpBars(){
   if(!hpBars) return;
   $$('[data-hp]').forEach(el=>{ if(hpBars[el.dataset.hp]!==undefined) el.value=hpBars[el.dataset.hp]; });
+  $$('[data-hpcheck]').forEach(el=>{ el.checked=!!hpBars[el.dataset.hpcheck]; });
   $$('[data-hpcolor]').forEach(el=>{ el.value=hpBars[el.dataset.hpcolor]||'#ffffff'; });
 }
 function wireHpBars(){
   $$('[data-hp]').forEach(el=>{ el.onchange=()=>{ const v=parseFloat(el.value); if(!isNaN(v)&&hpBars){ hpBars[el.dataset.hp]=v; saveHpBars(); } }; });
+  $$('[data-hpcheck]').forEach(el=>{ el.onchange=()=>{ if(hpBars){ hpBars[el.dataset.hpcheck]=el.checked; saveHpBars(); } }; });
   $$('[data-hpcolor]').forEach(el=>{ el.onchange=()=>{ if(hpBars){ hpBars[el.dataset.hpcolor]=el.value; saveHpBars(); } }; });
 }
 
@@ -746,6 +773,7 @@ function iconRow(key,label,o){
     <input type="range" class="op i-op" min="0" max="100" value="${pct(o.opacity)}">
     <span class="opv">${pct(o.opacity)}%</span>
     <input type="number" class="numin sz i-size" step="0.1" min="0.5" value="${o.size}">
+    ${spriteCtl(o)}
   </div>`;
 }
 function renderIcons(){
@@ -761,6 +789,7 @@ function renderIcons(){
     op.oninput=()=>{ opv.textContent=op.value+'%'; };
     op.onchange=()=>{ o.opacity=(+op.value)/100; saveStyles(); };
     row.querySelector('.i-size').onchange=e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)){ o.size=v; saveStyles(); } };
+    wireSprite(row,o,saveStyles);
   });
 }
 
@@ -786,6 +815,7 @@ function mechRow(m,i){
       <input type="range" class="op m-op" min="0" max="100" value="${pct(m.opacity)}">
       <span class="opv">${pct(m.opacity)}%</span>
       <input type="number" class="numin sz m-size" step="0.1" min="0.5" value="${m.size}">
+      ${spriteCtl(m)}
     </div>
   </div>`;
 }
@@ -810,6 +840,7 @@ function renderMechanics(){
     op.oninput=()=>{ opv.textContent=op.value+'%'; };
     op.onchange=()=>{ m.opacity=(+op.value)/100; saveStyles(); };
     row.querySelector('.m-size').onchange=e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)){ m.size=v; saveStyles(); } };
+    wireSprite(row,m,saveStyles);
     row.querySelector('.m-del').onclick=()=>{ styles.mechanics.splice(+row.dataset.i,1); renderMechanics(); saveStyles(); };
   });
 }
@@ -856,6 +887,7 @@ function drRow(r,i){
         <input type="color" class="dr-color" value="${r.color||'#ffffff'}">
         <input type="range" class="op dr-op" min="0" max="100" value="${pct(r.opacity)}"><span class="opv">${pct(r.opacity)}%</span>
         <input type="number" class="numin sz dr-size" step="0.1" min="0.5" value="${r.size}">
+        ${spriteCtl(r)}
         <input class="mname dr-label" style="flex:1;min-width:70px" value="${esc(r.label||'')}" placeholder="label (optional)">
         <label class="drflag" title="qualify as an auto-path navigation target"><input type="checkbox" class="dr-nav"${r.navigable?' checked':''}> Auto-path</label>
       </div>
@@ -897,6 +929,7 @@ function renderDrules(){
     row.querySelector('.dr-color').onchange=e=>{ r.color=e.target.value; refreshPicker(pk,r.shape,r.color); save(); };
     const op=row.querySelector('.dr-op'),opv=row.querySelector('.opv'); op.oninput=()=>opv.textContent=op.value+'%'; op.onchange=()=>{ r.opacity=(+op.value)/100; save(); };
     row.querySelector('.dr-size').onchange=e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)){ r.size=v; save(); } };
+    wireSprite(row,r,save);
     row.querySelector('.dr-label').onchange=e=>{ r.label=e.target.value; save(); };
     row.querySelector('.dr-nav').onchange=e=>{ r.navigable=e.target.checked; save(); };
   });

@@ -342,11 +342,17 @@ public sealed class RadarApp : IDisposable
     private void TrackImGuiGameWindow(nint gameHwnd)
     {
         if (_imguiOverlay is null) return;
-        if (!OverlayNative.GetWindowRect(gameHwnd, out var rect)) return;
-        var w = rect.Right - rect.Left;
-        var h = rect.Bottom - rect.Top;
+        // GameHelper2 parity: anchor to the game's CLIENT area, not the outer window rect.
+        // GetWindowRect includes title bar + borders in windowed mode, which shifts every UI
+        // coordinate and inflates the winH/1600 UI scale — the radar then never lines up with
+        // the game's own minimap.
+        if (!OverlayNative.GetClientRect(gameHwnd, out var client)) return;
+        var w = client.Right - client.Left;
+        var h = client.Bottom - client.Top;
         if (w <= 0 || h <= 0) return;
-        _imguiOverlay.SetGameBounds(rect.Left, rect.Top, w, h);
+        var origin = new OverlayNative.POINT { X = 0, Y = 0 };
+        if (!OverlayNative.ClientToScreen(gameHwnd, ref origin)) return;
+        _imguiOverlay.SetGameBounds(origin.X, origin.Y, w, h);
     }
 
     private void Tick()
@@ -358,9 +364,12 @@ public sealed class RadarApp : IDisposable
 
         HandleHotkeys();
 
+        var windowWidth = OverlayWidth;
+        var windowHeight = OverlayHeight;
         var inGame = _live.TryResolve(out var inGameState, out var areaInstance, out var localPlayer);
         var player = NumVec2.Zero;
-        var map = default(Poe2Live.MapUi);
+        var playerTerrainHeight = 0f;
+        var maps = default(Poe2Live.MapViews);
         var areaLevel = 0;
 
         if (inGame)
@@ -373,7 +382,8 @@ public sealed class RadarApp : IDisposable
             areaLevel = _live.AreaLevel(areaInstance);
 
             player = _live.PlayerGrid(localPlayer) ?? NumVec2.Zero;
-            map = _live.ReadMap(inGameState, areaInstance);
+            playerTerrainHeight = _live.PlayerTerrainHeight(localPlayer);
+            maps = _live.ReadMaps(inGameState, areaInstance, windowWidth, windowHeight);
             _areaCode = _live.AreaCode(areaInstance);
             // Player name reads a StdWString (allocates a string) — read it only when the local-player
             // pointer changes (i.e. once per session), not every render frame.
@@ -477,8 +487,9 @@ public sealed class RadarApp : IDisposable
             _hpFrame.Clear();
             foreach (var spec in _hpSpecs)
             {
-                if (!_live.TryLiveBar(spec.Entity, out var w, out var cur, out var max) || max <= 0 || cur <= 0) continue;
-                _hpFrame.Add(new HpBarTarget(w, Math.Clamp((float)cur / max, 0f, 1f), spec.Width, spec.Fill, spec.BorderWidth, spec.Border));
+                if (!_live.TryLiveBar(spec.Entity, out var w, out var cur, out var max, out var esCur, out var esMax) || max <= 0 || cur <= 0) continue;
+                var esFrac = esMax > 0 && esCur > 0 ? Math.Clamp((float)esCur / esMax, 0f, 1f) : 0f;
+                _hpFrame.Add(new HpBarTarget(w, Math.Clamp((float)cur / max, 0f, 1f), esFrac, spec.Width, spec.Fill, spec.BorderWidth, spec.Border));
             }
             hpBarsMs = ElapsedMs(hpBarsStart);
         }
@@ -490,22 +501,27 @@ public sealed class RadarApp : IDisposable
             if (_hpSpecs.Count > 0) _hpSpecs.Clear();
         }
 
-        _state = new RadarState(inGame, _areaHash, areaLevel, map.IsVisible, map.Zoom, player, _entities, _landmarks,
+        var largeMap = maps.LargeMap;
+        var miniMap = maps.MiniMap;
+        _state = new RadarState(inGame, _areaHash, areaLevel, largeMap.IsVisible, largeMap.Zoom, player, _entities, _landmarks,
             _hpPct, _manaPct, _esPct, _autoFlask, _flaskNote, _areaCode, _charName, _charLevel, _perfSnapshot);
 
         var realActive = _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd;
         // "Always show" draws the overlay even when PoE2 isn't focused (for dashboard calibration).
         var drawActive = realActive || _settings.AlwaysShowOverlay;
         var atlasProj = AtlasProjection(); // resolution-correct (auto from window height) or manual calib
-        var windowWidth = OverlayWidth;
-        var windowHeight = OverlayHeight;
+        var mapFrame = BuildLargeMapFrame(largeMap, windowWidth, windowHeight, playerTerrainHeight);
+        var miniMapFrame = BuildMiniMapFrame(miniMap, windowWidth, windowHeight, playerTerrainHeight);
         var ctx = new RenderContext(
             InGame: inGame,
             Active: drawActive,
             WindowWidth: windowWidth,
             WindowHeight: windowHeight,
             PlayerGrid: player,
-            Map: map,
+            Map: largeMap,
+            MiniMap: miniMap,
+            MapFrame: mapFrame,
+            MiniMapFrame: miniMapFrame,
             Entities: _entities,
             Landmarks: _landmarks,
             AreaHash: _areaHash,
@@ -581,6 +597,60 @@ public sealed class RadarApp : IDisposable
 
     private static double ElapsedMs(long start)
         => Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+
+    private MapFrame BuildLargeMapFrame(Poe2Live.MapUi map, int windowWidth, int windowHeight, float playerTerrainHeight)
+    {
+        // Upstream (Sikaka/POE2Radar) parity — the projection that actually locks onto the in-game map.
+        // It is NOT GameHelper2's diagonal/240 + cull + LargeMapScaleMultiplier (that drifted the fork off).
+        // The whole thing is a single empirical formula:
+        //   center = window center + Shift + DefaultShift(0,-20) + manual offset
+        //   scale  = Zoom × (WindowHeight / 677) × ScaleMul
+        // 677 is the calibrated magic constant; ScaleMul (default 1.0) is the only fine-tune knob.
+        var w = MathF.Max(1f, windowWidth);
+        var h = MathF.Max(1f, windowHeight);
+        var center = new NumVec2(
+            w * 0.5f + map.ShiftX + map.DefaultShiftX + _settings.OffX,
+            h * 0.5f + map.ShiftY + map.DefaultShiftY + _settings.OffY);
+        var scale = (map.Zoom > 0f ? map.Zoom : 1f) * (h / 677f) * _settings.ScaleMul;
+        return new MapFrame(center, scale, w, h, map.Element, playerTerrainHeight, NumVec2.Zero, IsMinimap: false);
+    }
+
+    private MapFrame BuildMiniMapFrame(Poe2Live.MapUi map, int windowWidth, int windowHeight, float playerTerrainHeight)
+    {
+        var fallbackSide = MathF.Max(1f, MathF.Min(windowWidth, windowHeight) * 0.28f);
+        var width = map.Width;
+        var height = map.Height;
+        var x = map.PositionX;
+        var y = map.PositionY;
+        var hasUiFrame =
+            map.Element != 0 &&
+            map.HasScreenRect &&    // raw unscaled values must never place the on-screen frame
+            float.IsFinite(width) && float.IsFinite(height) &&
+            float.IsFinite(x) && float.IsFinite(y) &&
+            width >= 32f && height >= 32f &&
+            width <= MathF.Max(1f, windowWidth) && height <= MathF.Max(1f, windowHeight);
+
+        if (!hasUiFrame)
+        {
+            width = fallbackSide;
+            height = fallbackSide;
+            x = MathF.Max(0f, windowWidth - width - 18f);
+            y = 18f;
+        }
+
+        var center = new NumVec2(
+            x + width * 0.5f + map.ShiftX + map.DefaultShiftX,
+            y + height * 0.5f + map.ShiftY + map.DefaultShiftY);
+        // GameHelper2 parity: the minimap projection uses the game's own zoom verbatim
+        // (scale = diagonal × zoom / 240). The ScaleMul/LargeMapScaleMultiplier calibration
+        // knobs are large-map-only — applying them here breaks the exact minimap match.
+        var scale = global::POE2Radar.Core.Pathfinding.MapProjection.MapScale(
+            width,
+            height,
+            map.Zoom > 0f ? map.Zoom : 1f,
+            userScale: 1f);
+        return new MapFrame(center, scale, width, height, map.Element, playerTerrainHeight, new NumVec2(x, y), IsMinimap: true);
+    }
 
     /// <summary>Decide which monsters get an HP bar and precompute each bar's style (width + packed
     /// fill/border colours) at WORLD rate. This is the work that used to run per entity per render frame in

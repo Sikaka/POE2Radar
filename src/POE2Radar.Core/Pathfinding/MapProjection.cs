@@ -32,6 +32,27 @@ public static class MapProjection
     }
 
     /// <summary>
+    /// GameHelper-style large-map base scale: derive the pixel scale from map diagonal and live zoom,
+    /// then let the user multiplier apply as final calibration.
+    /// </summary>
+    public static float LargeMapScale(float mapWidth, float mapHeight, float zoom, float largeMapScaleMultiplier, float userScale)
+        => MapScale(mapWidth, mapHeight, zoom * MathF.Max(0.001f, largeMapScaleMultiplier), userScale);
+
+    /// <summary>
+    /// GameHelper-style map scale for a concrete map UI rectangle and zoom value.
+    /// </summary>
+    public static float MapScale(float mapWidth, float mapHeight, float zoom, float userScale)
+    {
+        mapWidth = MathF.Max(1f, mapWidth);
+        mapHeight = MathF.Max(1f, mapHeight);
+        zoom = MathF.Max(0.01f, zoom);
+        userScale = MathF.Max(0.001f, userScale);
+
+        var diagonal = MathF.Sqrt(mapWidth * mapWidth + mapHeight * mapHeight);
+        return diagonal * zoom * userScale / 240f;
+    }
+
+    /// <summary>
     /// Project a grid cell to the map by adding its delta-from-player to the map center.
     /// Both <paramref name="mapCenter"/> and the result are in window-relative pixels.
     /// </summary>

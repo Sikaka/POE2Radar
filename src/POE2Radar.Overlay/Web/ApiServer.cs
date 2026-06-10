@@ -161,6 +161,14 @@ public sealed class ApiServer : IDisposable
                 break;
             }
 
+            case "/api/sprite-sheet":
+            {
+                var iconsPath = Path.Combine(AppContext.BaseDirectory, "Overlay", "icons.png");
+                if (!File.Exists(iconsPath)) { Write(ctx, 404, JsonSerializer.Serialize(new { error = "icons.png not found" }, Json)); break; }
+                WriteBytes(ctx, 200, "image/png", File.ReadAllBytes(iconsPath));
+                break;
+            }
+
             case "/landmarks":
             {
                 var list = s.Landmarks
@@ -446,6 +454,7 @@ public sealed class ApiServer : IDisposable
         hpBarMagic = _settings.HpBarMagic,
         hpBarRare = _settings.HpBarRare,
         hpBarUnique = _settings.HpBarUnique,
+        largeMapScaleMultiplier = _settings.LargeMapScaleMultiplier,
         scaleMul = _settings.ScaleMul,
         offX = _settings.OffX,
         offY = _settings.OffY,
@@ -482,6 +491,7 @@ public sealed class ApiServer : IDisposable
                 case "alwaysShowOverlay" when TryBool(p.Value, out var b): _settings.AlwaysShowOverlay = b; applied.Add(p.Name); break;
                 case "useCuratedLandmarks" when TryBool(p.Value, out var b): _settings.UseCuratedLandmarks = b; applied.Add(p.Name); break;
                 case "landmarkClusterGap" when TryInt(p.Value, out var n): _settings.LandmarkClusterGap = Math.Clamp(n, 0, 64); applied.Add(p.Name); break;
+                case "largeMapScaleMultiplier" when TryFloat(p.Value, out var f): _settings.LargeMapScaleMultiplier = Math.Clamp(f, 0.01f, 2f); applied.Add(p.Name); break;
                 case "scaleMul" when TryFloat(p.Value, out var f): _settings.ScaleMul = f; applied.Add(p.Name); break;
                 case "offX" when TryFloat(p.Value, out var f): _settings.OffX = f; applied.Add(p.Name); break;
                 case "offY" when TryFloat(p.Value, out var f): _settings.OffY = f; applied.Add(p.Name); break;
@@ -544,6 +554,7 @@ public sealed class ApiServer : IDisposable
                 m.Color = m.Color != null && HexColor.IsMatch(m.Color) ? m.Color.ToUpperInvariant() : "#FFFFFF";
                 m.Opacity = Math.Clamp(m.Opacity, 0f, 1f);
                 m.Size = Math.Clamp(m.Size, 0.5f, 40f);
+                m.Sprite = SanitizeSprite(m.Sprite);
                 m.Name = (m.Name ?? "").Trim();
                 if (m.Name.Length > 40) m.Name = m.Name[..40];
                 m.Match ??= new List<string>();
@@ -568,6 +579,18 @@ public sealed class ApiServer : IDisposable
         s.Color = s.Color != null && HexColor.IsMatch(s.Color) ? s.Color.ToUpperInvariant() : "#FFFFFF";
         s.Opacity = Math.Clamp(s.Opacity, 0f, 1f);
         s.Size = Math.Clamp(s.Size, 0.5f, 40f);
+        s.Sprite = SanitizeSprite(s.Sprite);
+    }
+
+    private static SpriteIconRef? SanitizeSprite(SpriteIconRef? sprite)
+    {
+        if (sprite is null) return null;
+        if (!string.Equals(sprite.Sheet, "icons.png", StringComparison.OrdinalIgnoreCase)) sprite.Sheet = "icons.png";
+        sprite.CellSize = Math.Clamp(sprite.CellSize <= 0 ? 64 : sprite.CellSize, 16, 128);
+        sprite.Col = Math.Clamp(sprite.Col, 0, 63);
+        sprite.Row = Math.Clamp(sprite.Row, 0, 127);
+        sprite.Scale = Math.Clamp(sprite.Scale <= 0f ? 1f : sprite.Scale, 0.2f, 4f);
+        return sprite;
     }
 
     /// <summary>Return <paramref name="c"/> upper-cased if it's a valid #RRGGBB, else <paramref name="fallback"/>.</summary>
@@ -597,6 +620,7 @@ public sealed class ApiServer : IDisposable
             parsed.BorderColorMagic = ValidHexOr(parsed.BorderColorMagic, "#73A6FF");
             parsed.BorderColorRare = ValidHexOr(parsed.BorderColorRare, "#FFD926");
             parsed.BorderColorUnique = ValidHexOr(parsed.BorderColorUnique, "#FF7300");
+            parsed.EnergyShieldColor = ValidHexOr(parsed.EnergyShieldColor, "#73E6FF");
             hp = parsed;
             return true;
         }
@@ -738,6 +762,7 @@ public sealed class ApiServer : IDisposable
         r.Color = SanitizeColor(r.Color);
         r.Opacity = Math.Clamp(r.Opacity, 0f, 1f);
         r.Size = Math.Clamp(r.Size, 0.5f, 40f);
+        r.Sprite = SanitizeSprite(r.Sprite);
         r.Label = string.IsNullOrWhiteSpace(r.Label) ? null : r.Label.Trim();
         if (r.Label is { Length: > 60 }) r.Label = r.Label[..60];
     }
@@ -840,6 +865,16 @@ public sealed class ApiServer : IDisposable
         var bytes = Encoding.UTF8.GetBytes(html);
         ctx.Response.StatusCode = 200;
         ctx.Response.ContentType = "text/html; charset=utf-8";
+        ctx.Response.Headers["Cache-Control"] = "no-store";
+        ctx.Response.ContentLength64 = bytes.Length;
+        ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+        ctx.Response.OutputStream.Close();
+    }
+
+    private static void WriteBytes(HttpListenerContext ctx, int status, string contentType, byte[] bytes)
+    {
+        ctx.Response.StatusCode = status;
+        ctx.Response.ContentType = contentType;
         ctx.Response.Headers["Cache-Control"] = "no-store";
         ctx.Response.ContentLength64 = bytes.Length;
         ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
