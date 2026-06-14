@@ -54,6 +54,10 @@ public sealed record RenderContext(
     int WindowWidth,
     int WindowHeight,
     NumVec2 PlayerGrid,
+    // Live (render-rate) player world position incl. Z; anchors the world-ground guidance line at the
+    // player's feet. Null when unavailable (not in game / read failed). NOT from the entity list (the
+    // local player is filtered out of that), so it's correct even when alive/dead state changes.
+    Vector3? PlayerWorld,
     Poe2Live.MapUi Map,
     IReadOnlyList<Poe2Live.EntityDot> Entities,
     IReadOnlyList<Poe2Live.Landmark> Landmarks,
@@ -89,9 +93,8 @@ public sealed record RenderContext(
     bool HpBarUnique,
     // Smoothed guidance route per selected target, each carrying its selection-order color slot.
     IReadOnlyList<SelectedPath> SelectedPaths,
-    // Predicate: is this navigation-target id currently selected? (drives the legend swatch/highlight).
-    Func<string, bool> IsSelected,
-    // Legend rows (one per unified navigation target) for the HUD panel; never null.
+    // Legend rows (one per unified navigation target) for the HUD panel; never null. Each row already
+    // carries its own IsSelected/ColorSlot (built at world rate), so the renderer never needs a predicate.
     IReadOnlyList<LegendEntry> Legend,
     // ── Collapsible "POE2Radar" navigation-menu widget (always drawn when Active+InGame). ──
     bool NavMenuExpanded,         // dropdown open?

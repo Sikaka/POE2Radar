@@ -6,8 +6,8 @@ namespace POE2Radar.Overlay.Pricing;
 
 /// <summary>
 /// Result of a price lookup. <see cref="Exalted"/> is the item's value in Exalted Orbs (PoE2's base
-/// economy unit on poe2scout). <see cref="Quantity"/> is the listing volume — a confidence signal:
-/// low-volume rows are often mislisted (a 1-listing leveling unique priced at 100k ex).
+/// economy unit). <see cref="Quantity"/> is the listing count / trade volume — a confidence signal:
+/// low-volume rows are often mislisted (a 2-listing leveling unique priced at 5000 div).
 /// </summary>
 public readonly record struct PriceResult(string Name, double Exalted, int Quantity, string Category)
 {
@@ -15,22 +15,48 @@ public readonly record struct PriceResult(string Name, double Exalted, int Quant
 }
 
 /// <summary>
-/// Centralized price source, ported in spirit from the user's PoE1 NinjaPriceService but built around
-/// the validated poe2scout PoE2 schema. Fetches the current league's currency + unique prices (all in
-/// Exalted), indexes them by normalized name AND by 2D-art basename (the bridge to in-game item reads:
-/// a dropped item's RenderItem .dds basename equals poe2scout's IconUrl basename), caches to disk, and
-/// refreshes on a TTL. Reads are lock-free off volatile snapshots; the whole index is swapped atomically.
+/// Centralized price source, ported in spirit from the user's PoE1 NinjaPriceService and built around
+/// the live <b>poe.ninja</b> PoE2 economy API (the gold-standard source, estimated off the official trade
+/// API). Fetches the current league's currency-like + unique prices, converts everything to Exalted, and
+/// indexes them by normalized name AND by 2D-art basename (the bridge to in-game item reads: a dropped
+/// item's RenderItem .dds basename equals poe.ninja's icon basename), caches to disk, and refreshes on a
+/// TTL. Reads are lock-free off volatile snapshots; the whole index is swapped atomically.
 ///
-/// <para>This is the recyclable data source: ground-loot valuation, expedition choices, ritual/vendor
-/// overlays all consume <see cref="TryByArt"/> / <see cref="TryByName"/>.</para>
+/// <para>Two poe.ninja endpoints, both returning all rows in one (un-paginated) response:</para>
+/// <list type="bullet">
+///   <item><b>exchange</b> (<c>.../exchange/current/overview?type=…</c>) — fungible/currency-like rows.
+///   <c>items[]</c> maps id→name/image, <c>lines[]</c> carries the price; joined by id.</item>
+///   <item><b>stash item</b> (<c>.../stash/current/item/overview?type=Unique…</c>) — uniques, with
+///   name/icon/price/listingCount all inline on each <c>lines[]</c> row.</item>
+/// </list>
+///
+/// <para>Price unit: every line's <c>primaryValue</c> is in <b>Divine Orbs</b> (validated against known
+/// anchors — Divine=1, Exalted≈0.0066, and the dirt-cheap unique floor ≈0.0017 div), and
+/// <c>core.rates.exalted</c> is Exalted-per-Divine, so <c>ex = primaryValue × rates.exalted</c> uniformly.</para>
+///
+/// <para>poe.ninja has no clean league-list endpoint, so the current league NAME is still discovered via
+/// poe2scout's lightweight <c>/Leagues</c> (its <c>Value</c> strings match what poe.ninja expects, e.g.
+/// "Runes of Aldur"); the divine/chaos RATES come from poe.ninja itself so prices stay self-consistent.</para>
+///
+/// <para>This is the recyclable data source: ground-loot valuation, runeforge rewards, expedition choices,
+/// ritual/vendor overlays all consume <see cref="TryByArt"/> / <see cref="TryByName"/>.</para>
 /// </summary>
 public sealed class PriceBook
 {
-    // poe2scout unique categories (have IconUrl → art basename) and flat currency categories (by name).
-    private static readonly string[] UniqueCategories =
-        { "weapon", "armour", "accessory", "flask", "jewel", "sanctum" };
-    private static readonly string[] CurrencyCategories =
-        { "currency", "runes", "expedition", "breach", "ritual", "essences", "fragments", "delirium", "ultimatum", "abyss", "expedition" };
+    // poe.ninja "stash item" unique types (icon → art basename + price inline per line).
+    private static readonly string[] UniqueTypes =
+        { "UniqueWeapons", "UniqueArmours", "UniqueAccessories", "UniqueFlasks", "UniqueJewels", "UniqueTablets" };
+
+    // poe.ninja "exchange" currency-like types. Superset of the old poe2scout set — includes
+    // SoulCores (poe2scout's "ultimatum"), UncutGems (Uncut Skill/Spirit/Support Gem by level) and
+    // LineageSupportGems (named, tradeable). NOTE: individual CUT active skill gems (e.g. "Rain of
+    // Blades") are not a traded market on poe.ninja or anywhere — only UncutGems carry a value.
+    private static readonly string[] ExchangeTypes =
+        { "Currency", "Runes", "Fragments", "Essences", "Expedition", "Breach", "Ritual", "Delirium",
+          "UncutGems", "Abyss", "SoulCores", "LineageSupportGems", "Idols" };
+
+    private const string NinjaExchange = "https://poe.ninja/poe2/api/economy/exchange/current/overview";
+    private const string NinjaStashItem = "https://poe.ninja/poe2/api/economy/stash/current/item/overview";
 
     private static readonly HttpClient Http = CreateHttp();
     private static readonly JsonSerializerOptions Json = new()
@@ -132,111 +158,125 @@ public sealed class PriceBook
         try
         {
             Status = "fetching…";
-            var league = await ResolveLeagueAndRatesAsync().ConfigureAwait(false);
+            var league = await ResolveLeagueAsync().ConfigureAwait(false);
             if (string.IsNullOrEmpty(league)) { Status = "no league"; return; }
+            var lg = Uri.EscapeDataString(league);
 
             var byArt = new Dictionary<string, PricedItem>(StringComparer.OrdinalIgnoreCase);
             var byName = new Dictionary<string, PricedItem>(StringComparer.OrdinalIgnoreCase);
-            var lg = Uri.EscapeDataString(league);
 
-            foreach (var cat in CurrencyCategories.Distinct())
-                await FetchCurrencyCategoryAsync(lg, cat, byArt, byName).ConfigureAwait(false);
-            foreach (var cat in UniqueCategories.Distinct())
-                await FetchUniqueCategoryAsync(lg, cat, byArt, byName).ConfigureAwait(false);
+            // Rates default to "not yet known"; the first overview response that carries core.rates sets
+            // them, and ApplyRates fixes ExPerDivine/ExPerChaos for the rest of the fetch + conversions.
+            double exPerDivine = 0;
+
+            foreach (var type in ExchangeTypes)
+                await FetchExchangeAsync(lg, type, byArt, byName, () => exPerDivine, r => exPerDivine = r).ConfigureAwait(false);
+            foreach (var type in UniqueTypes)
+                await FetchUniquesAsync(lg, type, byArt, byName, () => exPerDivine, r => exPerDivine = r).ConfigureAwait(false);
+
+            if (byArt.Count == 0 && byName.Count == 0) { Status = "fetch returned no rows"; return; }
 
             _byArt = byArt;
             _byName = byName;
             _league = league;
             _lastFetchUtc = DateTime.UtcNow;
-            Status = $"loaded {byArt.Count} uniques (by art) + {byName.Count} by name for '{league}'";
+            Status = $"loaded {byName.Count} by name + {byArt.Count} by art for '{league}'";
             SaveCache();
         }
         catch (Exception ex) { Status = $"fetch failed: {ex.Message}"; }
         finally { _fetching = false; }
     }
 
-    private async Task<string> ResolveLeagueAndRatesAsync()
+    /// <summary>Discover the current league name via poe2scout's /Leagues (its Value strings are exactly what
+    /// poe.ninja expects). A configured override wins; otherwise pick the current softcore league.</summary>
+    private async Task<string> ResolveLeagueAsync()
     {
+        if (_leagueOverride != null) return _leagueOverride;
         try
         {
             var json = await Http.GetStringAsync("https://poe2scout.com/api/poe2/Leagues").ConfigureAwait(false);
             var leagues = JsonSerializer.Deserialize<List<ScoutLeague>>(json, Json) ?? new();
-            ScoutLeague? pick = _leagueOverride != null
-                ? leagues.FirstOrDefault(l => string.Equals(l.Value, _leagueOverride, StringComparison.OrdinalIgnoreCase))
-                : leagues.FirstOrDefault(l => l.IsCurrent && !l.Value.StartsWith("HC", StringComparison.OrdinalIgnoreCase))
-                  ?? leagues.FirstOrDefault(l => l.IsCurrent);
-            pick ??= leagues.FirstOrDefault();
-            if (pick == null) return "";
-            if (pick.DivinePrice > 0) ExPerDivine = pick.DivinePrice;          // ex per 1 divine
-            if (pick.ChaosDivinePrice > 0 && pick.DivinePrice > 0)
-                ExPerChaos = pick.DivinePrice / pick.ChaosDivinePrice;          // ex per 1 chaos
-            return pick.Value;
+            var pick = leagues.FirstOrDefault(l => l.IsCurrent && !l.Value.StartsWith("HC", StringComparison.OrdinalIgnoreCase))
+                       ?? leagues.FirstOrDefault(l => l.IsCurrent)
+                       ?? leagues.FirstOrDefault();
+            return pick?.Value ?? "";
         }
-        catch { return _leagueOverride ?? ""; }
+        catch { return ""; }
     }
 
-    private async Task FetchUniqueCategoryAsync(string leagueEscaped, string category,
-        Dictionary<string, PricedItem> byArt, Dictionary<string, PricedItem> byName)
+    // Convert poe.ninja core.rates → our Exalted-per-Divine / Exalted-per-Chaos. rates are "units per
+    // Divine": exalted = ex/div directly; chaos = chaos/div, so ex/chaos = (ex/div)/(chaos/div).
+    private void ApplyRates(NinjaCore? core)
     {
-        var page = 1; var pages = 1;
-        while (page <= pages && page <= 20)
+        if (core?.Rates == null) return;
+        if (core.Rates.TryGetValue("exalted", out var exPerDiv) && exPerDiv > 0)
         {
-            try
-            {
-                var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Uniques/ByCategory" +
-                          $"?Category={category}&ReferenceCurrency=exalted&PerPage=250&Page={page}";
-                var json = await Http.GetStringAsync(url).ConfigureAwait(false);
-                var data = JsonSerializer.Deserialize<ScoutPage<ScoutUnique>>(json, Json);
-                if (data?.Items == null) break;
-                pages = data.Pages <= 0 ? 1 : data.Pages;
-
-                foreach (var it in data.Items)
-                {
-                    var price = it.CurrentPrice ?? 0;
-                    if (price <= 0 || string.IsNullOrWhiteSpace(it.Name)) continue;
-                    var item = new PricedItem(it.Name.Trim(), price, it.CurrentQuantity ?? 0, category);
-                    var art = ArtBasenameFromIcon(it.IconUrl);
-                    if (art != null) Upsert(byArt, art, item);     // key = art basename
-                    Upsert(byName, Normalize(it.Name), item);      // key = normalized name
-                }
-            }
-            catch { break; } // a 404 / missing category is fine — skip it
-            page++;
+            ExPerDivine = exPerDiv;
+            if (core.Rates.TryGetValue("chaos", out var chaosPerDiv) && chaosPerDiv > 0)
+                ExPerChaos = exPerDiv / chaosPerDiv;
         }
     }
 
-    private async Task FetchCurrencyCategoryAsync(string leagueEscaped, string category,
-        Dictionary<string, PricedItem> byArt, Dictionary<string, PricedItem> byName)
+    private async Task FetchExchangeAsync(string leagueEscaped, string type,
+        Dictionary<string, PricedItem> byArt, Dictionary<string, PricedItem> byName,
+        Func<double> getRate, Action<double> setRate)
     {
-        var page = 1; var pages = 1;
-        while (page <= pages && page <= 20)
+        try
         {
-            try
-            {
-                var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Currencies/ByCategory" +
-                          $"?Category={category}&ReferenceCurrency=exalted&PerPage=250&Page={page}";
-                var json = await Http.GetStringAsync(url).ConfigureAwait(false);
-                var data = JsonSerializer.Deserialize<ScoutPage<ScoutCurrency>>(json, Json);
-                if (data?.Items == null) break;
-                pages = data.Pages <= 0 ? 1 : data.Pages;
+            var url = $"{NinjaExchange}?league={leagueEscaped}&type={type}";
+            var data = JsonSerializer.Deserialize<NinjaOverview>(await Http.GetStringAsync(url).ConfigureAwait(false), Json);
+            if (data?.Lines == null) return;
+            if (getRate() <= 0) { ApplyRates(data.Core); setRate(ExPerDivine); }
+            var rate = getRate();
+            if (rate <= 0) return; // can't price without a rate
 
+            // items[] maps id → name/image; join the priced lines[] to it by id.
+            var meta = new Dictionary<string, NinjaItem>(StringComparer.Ordinal);
+            if (data.Items != null)
                 foreach (var it in data.Items)
-                {
-                    var price = it.CurrentPrice ?? 0;
-                    var name = it.Text;
-                    if (price <= 0 || string.IsNullOrWhiteSpace(name)) continue;
-                    var item = new PricedItem(name.Trim(), price, it.CurrentQuantity ?? 0, category);
-                    Upsert(byName, Normalize(name), item);
-                    // Currency/rune/essence/etc. rows ALSO carry an IconUrl, so index them by art basename
-                    // too — that's the bridge a DROPPED stackable's RenderItem .dds basename resolves
-                    // through (same as uniques), so ground-item pricing works for these categories.
-                    var art = ArtBasenameFromIcon(it.IconUrl);
-                    if (art != null) Upsert(byArt, art, item);
-                }
+                    if (!string.IsNullOrEmpty(it.Id)) meta[it.Id] = it;
+
+            foreach (var ln in data.Lines)
+            {
+                if (ln.Id.ValueKind != JsonValueKind.String) continue; // exchange ids are strings
+                var id = ln.Id.GetString();
+                if (string.IsNullOrEmpty(id) || !meta.TryGetValue(id, out var m)) continue;
+                if (string.IsNullOrWhiteSpace(m.Name) || ln.PrimaryValue <= 0) continue;
+                var ex = ln.PrimaryValue * rate;
+                var qty = (int)Math.Clamp(ln.VolumePrimaryValue ?? 0, 0, int.MaxValue);
+                var item = new PricedItem(m.Name.Trim(), ex, qty, type);
+                Upsert(byName, Normalize(m.Name), item);
+                var art = ArtBasenameFromIcon(m.Image);
+                if (art != null) Upsert(byArt, art, item);
             }
-            catch { break; }
-            page++;
         }
+        catch { /* a missing/empty category is fine — skip it */ }
+    }
+
+    private async Task FetchUniquesAsync(string leagueEscaped, string type,
+        Dictionary<string, PricedItem> byArt, Dictionary<string, PricedItem> byName,
+        Func<double> getRate, Action<double> setRate)
+    {
+        try
+        {
+            var url = $"{NinjaStashItem}?league={leagueEscaped}&type={type}";
+            var data = JsonSerializer.Deserialize<NinjaOverview>(await Http.GetStringAsync(url).ConfigureAwait(false), Json);
+            if (data?.Lines == null) return;
+            if (getRate() <= 0) { ApplyRates(data.Core); setRate(ExPerDivine); }
+            var rate = getRate();
+            if (rate <= 0) return;
+
+            foreach (var ln in data.Lines)
+            {
+                if (string.IsNullOrWhiteSpace(ln.Name) || ln.PrimaryValue <= 0) continue;
+                var ex = ln.PrimaryValue * rate;
+                var item = new PricedItem(ln.Name.Trim(), ex, ln.ListingCount ?? 0, type);
+                Upsert(byName, Normalize(ln.Name), item);
+                var art = ArtBasenameFromIcon(ln.Icon);
+                if (art != null) Upsert(byArt, art, item);
+            }
+        }
+        catch { }
     }
 
     // Keep the higher-value listing on a key collision (shared art across variants → show the best).
@@ -246,7 +286,8 @@ public sealed class PriceBook
         if (!map.TryGetValue(key, out var cur) || item.Exalted > cur.Exalted) map[key] = item;
     }
 
-    /// <summary>poe2scout IconUrl → basename. ".../<hash>/Earthbound.png" → "Earthbound".</summary>
+    /// <summary>poe.ninja icon → basename. ".../<hash>/Earthbound.png" → "Earthbound" (handles both the
+    /// absolute web.poecdn.com unique icons and the relative "/gen/image/.../X.png" currency images).</summary>
     private static string? ArtBasenameFromIcon(string? iconUrl)
     {
         if (string.IsNullOrWhiteSpace(iconUrl)) return null;
@@ -308,28 +349,43 @@ public sealed class PriceBook
         catch { }
     }
 
-    // ── poe2scout DTOs ──────────────────────────────────────────────────────────
+    // ── DTOs ─────────────────────────────────────────────────────────────────────
+
+    // poe2scout /Leagues — used only to discover the current league name.
     private sealed class ScoutLeague
     {
         public string Value { get; set; } = "";
         public bool IsCurrent { get; set; }
-        public double DivinePrice { get; set; }       // ex per divine
-        public double ChaosDivinePrice { get; set; }   // chaos per divine
     }
-    private sealed class ScoutPage<T> { public int Pages { get; set; } public List<T> Items { get; set; } = new(); }
-    private sealed class ScoutUnique
+
+    // poe.ninja overview (both exchange + stash item share this shape).
+    private sealed class NinjaOverview
     {
+        public NinjaCore? Core { get; set; }
+        public List<NinjaLine>? Lines { get; set; }
+        public List<NinjaItem>? Items { get; set; }   // exchange only (id→name/image); empty for uniques
+    }
+    private sealed class NinjaCore
+    {
+        public Dictionary<string, double>? Rates { get; set; }   // "units per Divine": exalted, chaos
+        public string? Primary { get; set; }
+        public string? Secondary { get; set; }
+    }
+    private sealed class NinjaItem
+    {
+        public string Id { get; set; } = "";       // string id ("exalted", "divine", …) on exchange
         public string Name { get; set; } = "";
-        public string? Type { get; set; }
-        public double? CurrentPrice { get; set; }
-        public int? CurrentQuantity { get; set; }
-        public string? IconUrl { get; set; }
+        public string? Image { get; set; }
     }
-    private sealed class ScoutCurrency
+    private sealed class NinjaLine
     {
-        public string Text { get; set; } = "";
-        public double? CurrentPrice { get; set; }
-        public int? CurrentQuantity { get; set; }
-        public string? IconUrl { get; set; }
+        // id is a string on the exchange endpoint and a number on the uniques endpoint — read raw and
+        // branch on ValueKind (uniques carry name/icon inline so their id is unused).
+        public JsonElement Id { get; set; }
+        public string? Name { get; set; }            // uniques: display name
+        public string? Icon { get; set; }            // uniques: absolute art url
+        public double PrimaryValue { get; set; }     // value in Divine Orbs (× rates.exalted → Exalted)
+        public double? VolumePrimaryValue { get; set; } // exchange: trade volume (confidence)
+        public int? ListingCount { get; set; }       // uniques: listing count (confidence)
     }
 }

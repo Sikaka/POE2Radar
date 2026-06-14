@@ -446,6 +446,7 @@ public sealed class RadarApp : IDisposable
 
         var inGame = _liveRender.TryResolve(out var inGameState, out var areaInstance, out var localPlayer);
         var player = NumVec2.Zero;
+        POE2Radar.Core.Game.Vector3? playerWorld = null;   // live player feet (incl. Z) for the world-ground route anchor
         var map = default(Poe2Live.MapUi);
 
         // One lock-free read each of the two published snapshots — everything drawn this frame comes from
@@ -461,6 +462,7 @@ public sealed class RadarApp : IDisposable
             _areaHash = _liveRender.AreaHash(areaInstance);
 
             player = _liveRender.PlayerGrid(localPlayer) ?? NumVec2.Zero;
+            playerWorld = _liveRender.PlayerWorld(localPlayer);   // same Render read PlayerGrid uses; live each frame
             map = _liveRender.ReadMap(inGameState, areaInstance);
             // Player name reads a StdWString (allocates a string) — read it only when the local-player
             // pointer changes (i.e. once per session), not every render frame.
@@ -502,7 +504,6 @@ public sealed class RadarApp : IDisposable
         var legend = worldFresh ? snap.Legend : (IReadOnlyList<LegendEntry>)Array.Empty<LegendEntry>();
         var hpTargets = worldFresh ? (IReadOnlyList<HpBarTarget>)_hpFrame : Array.Empty<HpBarTarget>();
         var itemLabels = worldFresh ? (IReadOnlyList<ItemLabel>)_itemFrame : Array.Empty<ItemLabel>();
-        var selSnap = snap.SelectedSnapshot;
 
         _state = new RadarState(inGame, snap.AreaHash, snap.AreaLevel, map.IsVisible, map.Zoom, player,
             snap.Entities, snap.Landmarks, _hpPct, _manaPct, _esPct, _autoFlask, _flaskNote,
@@ -518,6 +519,7 @@ public sealed class RadarApp : IDisposable
             WindowWidth: _window.Width,
             WindowHeight: _window.Height,
             PlayerGrid: player,
+            PlayerWorld: playerWorld,
             Map: map,
             Entities: entities,
             Landmarks: landmarks,
@@ -544,7 +546,6 @@ public sealed class RadarApp : IDisposable
             HpBarRare: _settings.HpBarRare,
             HpBarUnique: _settings.HpBarUnique,
             SelectedPaths: selectedPaths,
-            IsSelected: id => selSnap.Contains(id),
             Legend: legend,
             NavMenuExpanded: _navMenuExpanded,
             NavMenuCorner: _settings.NavMenuCorner,
@@ -620,12 +621,12 @@ public sealed class RadarApp : IDisposable
         // ShowPlayerBlip). Without this, a Player-category dot renders at map-center even with
         // the blip off. Filtering here (not the renderer) keeps the nav builder and HTTP API
         // consistent, and still leaves party members visible as Player dots.
-        if (localPlayer != 0)
-            _entities = _entities.Where(e => e.Address != localPlayer).ToList();
-        // Drop user-hidden entities once, here — so the renderer, nav-target builder, and the
-        // published RadarState (HTTP API) all see the same filtered list. Cull by metadata.
-        if (_hidden.Count > 0)
-            _entities = _entities.Where(e => !_hidden.IsHidden(e.Metadata)).ToList();
+        // Drop user-hidden entities + the local player's own entity in ONE in-place pass (the list is a
+        // fresh List from Entities() and isn't published yet) — so the renderer, nav-target builder, and the
+        // published RadarState (HTTP API) all see the same filtered list, without copying it twice.
+        var culling = _hidden.Count > 0;
+        if (localPlayer != 0 || culling)
+            _entities.RemoveAll(e => e.Address == localPlayer || (culling && _hidden.IsHidden(e.Metadata)));
         // Accumulate any newly-seen monster mod ids into the persistent catalog (debounced write)
         // so the dashboard rule editor can offer them and they survive restarts / new content.
         _modCatalog.Observe(_entities);
@@ -1350,8 +1351,20 @@ public sealed class RadarApp : IDisposable
         // (a) Bring the tick-thread-owned tracker map in line with the selection (create/remove).
         ReconcileTrackers(selected);
 
-        // (b) Maintain + trigger replans. Resolve each id to its live grid; if it doesn't resolve this
-        //     tick (despawned / not yet present) keep it selected but skip planning.
+        // (b) Drain completed background routes FIRST, then maintain. Applying a fresh path resets the
+        //     cursor to 0; advancing it (in (c) below) in the SAME tick — before RebuildSelectedPaths
+        //     reads CurrentPoints — prevents a one-frame "backward tail" pop when the waypoints swap.
+        if (_replanner.TryDrainResults(out var results))
+        {
+            foreach (var r in results)
+            {
+                if (!_trackers.TryGetValue(r.TargetId, out var tracker)) continue; // deselected → ignore
+                tracker.ApplyResult(r.Waypoints, new NumVec2(r.Goal.x, r.Goal.y));
+            }
+        }
+
+        // (c) Maintain (advance cursor, cheap) + trigger replans. Resolve each id to its live grid; if it
+        //     doesn't resolve this tick (despawned / not yet present) keep it selected but skip planning.
         foreach (var id in selected)
         {
             if (!_trackers.TryGetValue(id, out var tracker)) continue;
@@ -1359,17 +1372,6 @@ public sealed class RadarApp : IDisposable
             if (!TryResolveTargetGrid(id, out var goal)) continue;
             if (!tracker.ReplanInFlight && tracker.ShouldReplan(player, goal))
                 EnqueueReplan(id, tracker, goal);
-        }
-
-        // (c) Drain completed background routes; apply only those still tracked.
-        if (_replanner.TryDrainResults(out var results))
-        {
-            foreach (var r in results)
-            {
-                if (!_trackers.TryGetValue(r.TargetId, out var tracker)) continue; // deselected → ignore
-                tracker.ApplyResult(r.Waypoints, new NumVec2(r.Goal.x, r.Goal.y));
-                Console.WriteLine($"replan: {TargetLabel(r.TargetId)} = {r.Waypoints.Count} waypoints");
-            }
         }
 
         // (d) Cheap rebuild of the draw list from each tracker's current (cursor-advanced) points.
@@ -1382,7 +1384,7 @@ public sealed class RadarApp : IDisposable
     {
         if (_terrain is not { } terrain) return; // can't plan without terrain yet
         var player = _worldPlayer;   // the world tick's current player (this all runs on the world thread)
-        tracker.MarkReplanRequested();
+        tracker.MarkReplanRequested(player);
         _replanner.Enqueue(new BackgroundReplanner.Request(
             id, terrain, ((int)player.X, (int)player.Y), ((int)goal.X, (int)goal.Y)));
     }

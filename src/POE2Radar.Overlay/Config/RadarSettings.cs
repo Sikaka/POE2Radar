@@ -331,7 +331,7 @@ public sealed class TerrainSettings
 /// <summary>
 /// Ground-item value overlay: draws a dropped UNIQUE's resolved name + Exalted price over its in-world
 /// loot icon (so unidentified uniques reveal what they are), with a border when the value clears
-/// <see cref="HighlightMinEx"/>. Prices come from the PriceBook (poe2scout). <see cref="League"/> blank =
+/// <see cref="HighlightMinEx"/>. Prices come from the PriceBook (poe.ninja). <see cref="League"/> blank =
 /// auto-detect the current league; set it to override. <see cref="MinQuantity"/> filters low-volume
 /// mislistings out of the overlay.
 /// </summary>
@@ -391,6 +391,9 @@ public sealed class RadarStyles
         // "StrongBoxes" hits the real boxes (BasicStrongboxLow lives under it) but not those.
         new() { Name = "Strongbox",  Match = new() { "StrongBoxes" }, Categories = new() { "Chest" }, Shape = "Square", Color = "#FFB300", Opacity = 1f, Size = 6f },
         new() { Name = "Essence",    Match = new() { "Essence" },                           Shape = "Triangle", Color = "#33E0FF", Opacity = 1f, Size = 7f },
-        new() { Name = "Shrine",     Match = new() { "Shrine" },                            Shape = "Star",     Color = "#7DFF7D", Opacity = 1f, Size = 6f },
+        // Match the real shrine namespace ONLY (Metadata/Shrines/Shrine_Trigger). A bare "Shrine" substring
+        // false-positives on terrain cosmetics/spawners (GoblinShrineCosmetic, GoblinShrineSpawnerLeap) and
+        // the ShrineFireDaemon effect carrier — none of which are the clickable shrine mechanic.
+        new() { Name = "Shrine",     Match = new() { "Metadata/Shrines/" },                  Shape = "Star",     Color = "#7DFF7D", Opacity = 1f, Size = 6f },
     };
 }

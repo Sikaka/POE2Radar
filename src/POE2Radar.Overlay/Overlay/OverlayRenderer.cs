@@ -398,25 +398,34 @@ public sealed class OverlayRenderer : IDisposable
         if (ctx.CameraMatrix is not { } m || ctx.SelectedPaths.Count == 0) return;
         float W = ctx.WindowWidth, H = ctx.WindowHeight;
 
-        // Ground plane height = the player entity's world Z (paths sit at the player's feet).
-        var z = 0f;
-        foreach (var e in ctx.Entities)
-            if (e.Category == Poe2Live.EntityCategory.Player) { z = e.World.Z; break; }
+        // Ground plane height = the LIVE player feet Z (read this frame, not from the world-rate entity
+        // list — the local player is filtered out of that). Paths sit at the player's feet.
+        var z = ctx.PlayerWorld?.Z ?? 0f;
+
+        // Project a ground-plane world point to screen; null when it's behind the camera.
+        NumVec2? Proj(float wx, float wy)
+        {
+            var cw = wx * m[3] + wy * m[7] + z * m[11] + m[15];
+            if (cw <= 0.0001f) return null;
+            var cxp = wx * m[0] + wy * m[4] + z * m[8] + m[12];
+            var cyp = wx * m[1] + wy * m[5] + z * m[9] + m[13];
+            return new NumVec2((cxp / cw / 2f + 0.5f) * W, (0.5f - cyp / cw / 2f) * H);
+        }
+
+        // The line head is pinned to the player's LIVE world position every frame, so the first segment is
+        // always (you → next waypoint) and tracks you smoothly between world-rate path updates.
+        NumVec2? anchor = ctx.PlayerWorld is { } pw ? Proj(pw.X, pw.Y) : null;
 
         foreach (var path in ctx.SelectedPaths)
         {
             if (path.Points.Count == 0) continue;
             _bPath!.Color = PathColor(path.ColorSlot);
 
-            NumVec2? prev = null;
+            NumVec2? prev = anchor;
             foreach (var (gx, gy) in path.Points)
             {
                 float wx = gx * GridConstants.GridToWorld, wy = gy * GridConstants.GridToWorld;
-                var cw = wx * m[3] + wy * m[7] + z * m[11] + m[15];
-                if (cw <= 0.0001f) { prev = null; continue; } // waypoint behind camera — break the line
-                var cxp = wx * m[0] + wy * m[4] + z * m[8] + m[12];
-                var cyp = wx * m[1] + wy * m[5] + z * m[9] + m[13];
-                var p = new NumVec2((cxp / cw / 2f + 0.5f) * W, (0.5f - cyp / cw / 2f) * H);
+                if (Proj(wx, wy) is not { } p) { prev = null; continue; } // waypoint behind camera — break the line
                 if (prev is { } pr) rt.DrawLine(pr, p, _bPath, 3f);
                 rt.FillEllipse(new Ellipse(p, 4f, 4f), _bPath);
                 prev = p;
@@ -604,9 +613,11 @@ public sealed class OverlayRenderer : IDisposable
     {
         foreach (var path in ctx.SelectedPaths)
         {
-            if (path.Points.Count < 2) continue;
+            if (path.Points.Count < 1) continue;
             _bPath!.Color = PathColor(path.ColorSlot);
-            NumVec2? prev = null;
+            // Anchor the line head at the live player marker (center) so the route stays attached to the
+            // player every frame, even between world-rate cursor updates / replans.
+            NumVec2? prev = center;
             foreach (var (gx, gy) in path.Points)
             {
                 var p = Project(new NumVec2(gx, gy), player, center, scale);
