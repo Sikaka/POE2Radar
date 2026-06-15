@@ -59,28 +59,19 @@ public sealed class RouteTracker
 
         if (_waypoints.Count == 0) return;
 
-        // Find the nearest segment [i, i+1] in the forward window — the segment the player is currently on.
-        var bestDist = float.MaxValue;
-        var bestSeg = _cursor;
-        var last = Math.Min(_waypoints.Count - 1, _cursor + ForwardWindow);
-        for (var i = _cursor; i < last; i++)
+        // Advance the cursor PROGRESSIVELY (one node at a time, in order) — the cursor is the next node we
+        // are heading TO. Consume it only once we've reached it OR walked PAST it along the path direction,
+        // then look at the one after. Checking nodes sequentially (NOT a global "nearest segment in a
+        // window" search) is what stops a switchback that loops back near us from making the cursor jump
+        // ahead and collapse the route into a straight line through terrain. We never consume the goal.
+        while (_cursor < _waypoints.Count - 1)
         {
-            var d = PointSegmentDistance(playerGrid, ToVec(_waypoints[i]), ToVec(_waypoints[i + 1]));
-            if (d < bestDist) { bestDist = d; bestSeg = i; }
+            var a = ToVec(_waypoints[_cursor]);                 // node we're currently heading to
+            if (NumVec2.Distance(playerGrid, a) <= ReachedCells) { _cursor++; continue; }   // reached it
+            var ab = ToVec(_waypoints[_cursor + 1]) - a;        // direction toward the node after
+            if (ab.LengthSquared() > 1e-3f && NumVec2.Dot(playerGrid - a, ab) > 0f) { _cursor++; continue; } // walked past it
+            break;
         }
-
-        // The next node we're heading to is that segment's FAR end (bestSeg + 1) — start CurrentPoints
-        // there so the drawn line goes player → next node, never backward to the node we just passed.
-        var nextNode = bestSeg + 1;
-
-        // If we're essentially standing on that next node already, consume it too (so we point at the one
-        // after). Don't consume the final goal node.
-        if (nextNode < _waypoints.Count - 1 &&
-            NumVec2.Distance(playerGrid, ToVec(_waypoints[nextNode])) <= ReachedCells)
-            nextNode++;
-
-        // Cursor only ever advances; clamp so the goal node always remains drawable.
-        if (nextNode > _cursor) _cursor = Math.Min(nextNode, _waypoints.Count - 1);
     }
 
     /// <summary>
