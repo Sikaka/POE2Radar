@@ -43,17 +43,23 @@ public readonly record struct PriceResult(string Name, double Exalted, int Quant
 /// </summary>
 public sealed class PriceBook
 {
-    // poe.ninja "stash item" unique types (icon → art basename + price inline per line).
+    // poe.ninja "stash item" overview types (icon → art basename + price inline per line). Mostly
+    // uniques, plus PrecursorTablets (the atlas/tower tablets — Overseer/Breach/Ritual/… Tablet), which
+    // share this endpoint's shape rather than the exchange one.
     private static readonly string[] UniqueTypes =
-        { "UniqueWeapons", "UniqueArmours", "UniqueAccessories", "UniqueFlasks", "UniqueJewels", "UniqueTablets" };
+        { "UniqueWeapons", "UniqueArmours", "UniqueAccessories", "UniqueFlasks", "UniqueJewels",
+          "UniqueTablets", "PrecursorTablets" };
 
     // poe.ninja "exchange" currency-like types. Superset of the old poe2scout set — includes
     // SoulCores (poe2scout's "ultimatum"), UncutGems (Uncut Skill/Spirit/Support Gem by level) and
     // LineageSupportGems (named, tradeable). NOTE: individual CUT active skill gems (e.g. "Rain of
     // Blades") are not a traded market on poe.ninja or anywhere — only UncutGems carry a value.
+    // "Verisium" is the Expedition-2 / rune-crafting currency family (Runes of Aldur): the Alloys
+    // (Mystic/Prismatic/Swift/Runic/… Alloy), Verisium, Starlit Ores, and Crests — the runeforge reward
+    // pool. Without it those rewards have no price and draw no overlay label.
     private static readonly string[] ExchangeTypes =
-        { "Currency", "Runes", "Fragments", "Essences", "Expedition", "Breach", "Ritual", "Delirium",
-          "UncutGems", "Abyss", "SoulCores", "LineageSupportGems", "Idols" };
+        { "Currency", "Runes", "Fragments", "Essences", "Expedition", "Verisium", "Breach", "Ritual",
+          "Delirium", "UncutGems", "Abyss", "SoulCores", "LineageSupportGems", "Idols" };
 
     private const string NinjaExchange = "https://poe.ninja/poe2/api/economy/exchange/current/overview";
     private const string NinjaStashItem = "https://poe.ninja/poe2/api/economy/stash/current/item/overview";
