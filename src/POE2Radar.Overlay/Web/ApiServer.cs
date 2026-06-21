@@ -491,6 +491,7 @@ public sealed class ApiServer : IDisposable
         hpBars = _settings.HpBars,   // monster HP-bar geometry (width/height/offset)
         terrain = _settings.Terrain, // walkable-terrain bitmap colors/transparency
         groundItems = _settings.GroundItems, // ground-item value overlay (enabled / highlight threshold / league)
+        monoliths = _settings.Monoliths, // runeshape-monolith (expedition) reward overlay + value gate
     };
 
     /// <summary>Apply only whitelisted radar/visual keys from a posted JSON object; persists on change.</summary>
@@ -545,6 +546,9 @@ public sealed class ApiServer : IDisposable
                     break;
                 case "groundItems" when p.Value.ValueKind == JsonValueKind.Object:
                     if (TryParseGroundItems(p.Value, out var gi)) { _settings.GroundItems = gi; applied.Add(p.Name); }
+                    break;
+                case "monoliths" when p.Value.ValueKind == JsonValueKind.Object:
+                    if (TryParseMonoliths(p.Value, out var mono)) { _settings.Monoliths = mono; applied.Add(p.Name); }
                     break;
                 // Anything else (apiPort, unknown keys) is ignored by design.
             }
@@ -649,6 +653,23 @@ public sealed class ApiServer : IDisposable
             parsed.InteriorOpacity = Math.Clamp(parsed.InteriorOpacity, 0f, 1f);
             parsed.EdgeOpacity = Math.Clamp(parsed.EdgeOpacity, 0f, 1f);
             t = parsed;
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    private static bool TryParseMonoliths(JsonElement el, out MonolithSettings m)
+    {
+        m = new MonolithSettings();
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<MonolithSettings>(el.GetRawText(), Json);
+            if (parsed == null) return false;
+            parsed.HighlightMinEx = Math.Max(0, parsed.HighlightMinEx);
+            parsed.MinRewardEx = Math.Max(0, parsed.MinRewardEx);
+            parsed.MinValueEx = Math.Max(0, parsed.MinValueEx);
+            parsed.PanelMaxDistance = Math.Max(0, parsed.PanelMaxDistance);
+            m = parsed;
             return true;
         }
         catch (JsonException) { return false; }

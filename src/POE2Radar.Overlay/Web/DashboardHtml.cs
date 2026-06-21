@@ -638,6 +638,21 @@ internal static class DashboardHtml
               <input class="numin" type="text" data-gi="league" style="width:150px"></div>
             <div class="row"><div class="rl hint-row">Unidentified uniques reveal their NAME + value; everything else (identified uniques, currency, runes, essences, …) shows the value only.</div></div>
           </div>
+          <div class="card">
+            <h3>Monolith Rewards <span class="tag">&middot; expedition</span></h3>
+            <div class="row"><div class="rl">Enabled<small>read + price runeshape-monolith rewards</small></div>
+              <label class="sw"><input type="checkbox" data-mono="enabled"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Min value to show / auto-path<small>hide the monolith entirely (icon, panel, auto-nav) below this (Ex). 0 = show every monolith</small></div>
+              <input class="numin" type="number" step="1" min="0" data-mono="minValueEx"></div>
+            <div class="row"><div class="rl">Highlight threshold<small>green value tier at or above this (Ex)</small></div>
+              <input class="numin" type="number" step="1" min="0" data-mono="highlightMinEx"></div>
+            <div class="row"><div class="rl">Hide collected<small>drop monoliths whose reward was already claimed</small></div>
+              <label class="sw"><input type="checkbox" data-mono="hideCollected"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Show reward panel<small>the in-overlay nearby-monolith reward list</small></div>
+              <label class="sw"><input type="checkbox" data-mono="showPanel"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Show map label<small>draw value + top reward at the icon</small></div>
+              <label class="sw"><input type="checkbox" data-mono="showMapLabel"><span class="track"></span><span class="knob"></span></label></div>
+          </div>
         </div>
         <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsg">&#10003; saved to config</span></div>
       </section>
@@ -690,7 +705,8 @@ async function loadSettings(){
     hpBars = s.hpBars || null;
     terrain = s.terrain || null;
     gi = s.groundItems || {};
-    renderHpBars(); renderTerrain(); renderGround();
+    mono = s.monoliths || {};
+    renderHpBars(); renderTerrain(); renderGround(); renderMono();
   }catch(e){}
 }
 
@@ -719,6 +735,24 @@ function wireGround(){
     gi=gi||{};
     gi.categories=$$('#giCats .chip.on').map(x=>x.dataset.gicat);
     saveGround();
+  });
+}
+/* ── monolith (expedition) rewards (nested object: POST the whole {monoliths}) ── */
+let mono = null;
+function renderMono(){
+  if(!mono) return;
+  $$('[data-mono]').forEach(el=>{
+    const k=el.dataset.mono;
+    if(el.type==='checkbox') el.checked=!!mono[k];
+    else if(mono[k]!==undefined && mono[k]!==null) el.value=mono[k];
+  });
+}
+function saveMono(){ if(mono) saveSetting('monoliths', mono); }
+function wireMono(){
+  $$('[data-mono]').forEach(el=>{
+    const k=el.dataset.mono;
+    if(el.type==='checkbox') el.onchange=()=>{ mono=mono||{}; mono[k]=el.checked; saveMono(); };
+    else el.onchange=()=>{ const v=parseFloat(el.value); if(!isNaN(v)){ mono=mono||{}; mono[k]=v; saveMono(); } };
   });
 }
 async function saveSetting(key,val){
@@ -1399,7 +1433,7 @@ async function checkVersion(){
   }catch(e){}
 }
 
-wireSettings(); wireHpBars(); wireTerrain(); wireGround();
+wireSettings(); wireHpBars(); wireTerrain(); wireGround(); wireMono();
 loadIcons().then(()=>{ loadSettings(); loadFilters(); }); // Rules is the default tab
 tick(); setInterval(tick, 1000);
 checkVersion();

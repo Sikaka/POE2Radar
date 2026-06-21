@@ -189,7 +189,7 @@ public sealed class RadarApp : IDisposable
 
     // ── Auto-flask (opt-in input). Foreground + in-game gated; F8 master kill-switch.
     //    Flask keys are configurable in RadarSettings (LifeKey/ManaKey). ──
-    private bool _autoFlask = true;                        // auto-on; toggle with F8
+    private bool _autoFlask = true;                        // restored from settings in ctor; toggle with F8
     private DateTime _lifeFiredAt = DateTime.MinValue, _manaFiredAt = DateTime.MinValue;
     private DateTime _nextToggleAt = DateTime.MinValue;
     private DateTime _nextPathKeyAt = DateTime.MinValue;
@@ -256,6 +256,7 @@ public sealed class RadarApp : IDisposable
         _process = process;
         _reader = reader;
         _settings = RadarSettings.Load();
+        _autoFlask = _settings.AutoFlaskEnabled;   // restore the persisted F8 state (default ON)
         Console.WriteLine($"Settings: {RadarSettings.FilePath}");
         Console.WriteLine($"Entity names: {EntityNameResolver.Shared.Count} mappings; zones: {ZoneGuide.Shared.Count}");
         _live = new Poe2Live(reader, gameStateSlot);
@@ -813,6 +814,9 @@ public sealed class RadarApp : IDisposable
                 rewards.Add(new MonolithReward(o.Name.Length > 0 ? o.Name : o.Description, o.Count, ex, o.Size, o.Runes));
                 if (ex > best) { best = ex; bestName = o.Name; }
             }
+            // Whole-structure value gate: below the floor, surface nothing (no icon/panel) — and, because
+            // BuildNavTargets keys auto-pathing off a surviving marker, no auto-route either.
+            if (cfg.MinValueEx > 0 && best < cfg.MinValueEx) continue;
             rewards.Sort((a, b) => b.Ex.CompareTo(a.Ex));
 
             var anchor = m.IsUnique ? "Unique" : m.AnchorIdx >= 0 ? _monoCatalog.RuneName(m.AnchorIdx) : "?";
@@ -1443,6 +1447,8 @@ public sealed class RadarApp : IDisposable
         {
             _autoFlask = !_autoFlask;
             _nextToggleAt = DateTime.UtcNow.AddMilliseconds(300);
+            _settings.AutoFlaskEnabled = _autoFlask;   // persist so the choice survives a restart
+            _settings.Save();
             Console.WriteLine($"\nAuto-flask: {(_autoFlask ? "ON" : "OFF")}");
         }
         // F9 quits the overlay (besides the tray-icon Exit).
@@ -1561,6 +1567,19 @@ public sealed class RadarApp : IDisposable
     /// carries <see cref="NavTarget.AutoPath"/> — true when its display rule opts into auto-pathing —
     /// which drives the zone-entry auto-selection (replacing the old AutoNavPatterns list). Deduped by id.
     /// </summary>
+    /// <summary>Whether an Expedition2 monolith entity clears the configured whole-structure value gate
+    /// for auto-pathing. A monolith passes iff <see cref="UpdateMonoliths"/> published a surviving marker
+    /// for it this tick (markers below <c>MinValueEx</c> are dropped there). Non-monolith entities — and a
+    /// 0 gate (the default) — always pass, so existing behavior is unchanged unless the user opts in.</summary>
+    private bool MonolithNavAllowed(in Poe2Live.EntityDot e)
+    {
+        if (_settings.Monoliths.MinValueEx <= 0) return true;
+        if (e.Metadata.IndexOf("Expedition2Encounter", StringComparison.OrdinalIgnoreCase) < 0) return true;
+        foreach (var mk in _monoRender.Markers)
+            if (NumVec2.DistanceSquared(mk.Grid, e.Grid) < 1f) return true;  // same-tick grid → exact match
+        return false;
+    }
+
     private List<NavTarget> BuildNavTargets(NumVec2 player)
     {
         var targets = new List<NavTarget>(_landmarks.Count + 16);
@@ -1579,7 +1598,7 @@ public sealed class RadarApp : IDisposable
         // AutoPath true only when the matched rule's Auto-path flag is set.
         var pois = _entities
             .Where(e => e.IsAlive && !e.IconComplete)
-            .Select(e => (e, nav: _displayRules.Resolve(e)?.Navigable ?? false))
+            .Select(e => (e, nav: (_displayRules.Resolve(e)?.Navigable ?? false) && MonolithNavAllowed(e)))
             .Where(x => x.e.Poi
                         || (x.e.Category == Poe2Live.EntityCategory.Monster && x.e.Rarity == Poe2Live.Rarity.Unique)
                         || x.nav)

@@ -130,6 +130,11 @@ public sealed class RadarSettings
     // need ~1.5× the size the old flat shapes used to be legible at radar scale.
     public bool IconSizesV1 { get; set; }
 
+    // ── Auto-flask master enable (the F8 in-game kill-switch persists here so a disabled state survives
+    //    a restart). Defaults ON to preserve the historical "auto-on each launch" behavior. NOTE: this is
+    //    deliberately NOT writable via the HTTP API — automation is only ever armed from the local F8 key. ──
+    public bool AutoFlaskEnabled { get; set; } = true;
+
     // ── Auto-flask thresholds + per-flask cooldowns (milliseconds). ──
     // What the (single) life-flask key triggers on: "Health" watches HP% only (default — unchanged
     // behavior), "EnergyShield" watches ES% only (for CI / ES-stacking builds), "Either" fires when
@@ -383,6 +388,10 @@ public sealed class MonolithSettings
     // Value tiers (best offered reward, Exalted): green ≥ HighlightMinEx, yellow from 0.6×, neutral below.
     public double HighlightMinEx { get; set; } = 30.0;
     public double MinRewardEx { get; set; } = 1.0;       // hide reward rows below this (panel + dashboard)
+    // Whole-structure value gate (Exalted): hide the monolith ENTIRELY — map icon, reward panel/label, AND
+    // auto-navigation — when its best offered reward is below this. 0 = show & auto-path every monolith
+    // (default; preserves prior behavior). Set e.g. 10 to only surface/auto-route to high-value ones.
+    public double MinValueEx { get; set; } = 0.0;
     public bool HideCollected { get; set; } = true;      // hide monoliths whose reward was already claimed
     public bool ShowPanel { get; set; } = true;          // the in-overlay nearby-monolith reward panel
     public bool ShowMapLabel { get; set; } = true;       // draw the value + top-reward label at the icon
