@@ -2527,7 +2527,7 @@ static int RunTiles(ProcessHandle process, MemoryReader reader)
 {
     var (_, _, ai, _) = ResolveChain(process, reader);
     if (ai == 0) { Console.Error.WriteLine("Could not resolve chain (in game?)."); return 1; }
-    var terrain = ai + 0x8A0;
+    var terrain = ai + Poe2.AreaInstance.TerrainMetadata;
     reader.TryReadStruct<long>(terrain + 0x18, out var tilesX);
     reader.TryReadStruct<nint>(terrain + 0x28, out var first);
     reader.TryReadStruct<nint>(terrain + 0x30, out var last);

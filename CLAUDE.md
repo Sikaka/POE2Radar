@@ -110,16 +110,17 @@ is rescaled by liveZoom/calibZoom each frame. See `resources/atlas-research-note
 ## Key facts (validated live; re-verify per patch)
 
 - Chain: AOB "Game States" → GameState → InGameState (active state) → `AreaInstance @ +0x290` →
-  `LocalPlayer @ +0x5A0`.
+  `LocalPlayer @ +0x5B8`.
 - AreaInstance: AreaInfo `+0xA0` (code), AreaLevel `+0xC4`, AreaHash `+0x11C`, AwakeEntities std::map
-  `+0x6C0` / Sleeping `+0x6D0`, TerrainStruct `+0x8A0` (walkable `+0xD0`, BytesPerRow `+0x130`).
+  `+0x6D8` / Sleeping `+0x6E8`, TerrainStruct `+0x8B8` (walkable `+0xD0`, BytesPerRow `+0x130`). The
+  entity-map/player/terrain/ServerData block shifted +0x18 in the 2026-06-25 patch (validated live).
 - Entity: Details `+0x08`, ComponentList `+0x10`; component map via ComponentLookUp StdBucket.
   Rarity = ObjectMagicProperties `+0x144`; hostility = Positioned.Reaction `+0x1E0` (friendly = bit
   pattern `(b&0x7F)==1`); grid = Render world `+0x138` / 10.87; Life HP `+0x1A8` / Mana `+0x1F8` / ES
   `+0x230`; Player name `+0x1B0`, level `+0x204`.
 - Map UI: UiRoot `InGameState +0x2F0`; UiElement Self `+0x08`, Children `+0x10`, Flags `+0x180`
   (visible = bit `0x0B`); MapUiElement Shift `+0x368`, DefaultShift `+0x370` (= (0,-20)), Zoom `+0x3A8`.
-- Inventory (✓ live, Research `--inventory`): `AreaInstance +0x580` → ServerData → `+0x48` PlayerServerData
+- Inventory (✓ live, Research `--inventory`): `AreaInstance +0x598` → ServerData → `+0x48` PlayerServerData
   vec `[0]` → ServerDataStructure → `+0x320` PlayerInventories vec (InventoryArrayStruct stride `0x18`:
   `+0x00` id, `+0x08` → InventoryStruct, `+0x10` = ptr−0x10 fingerprint). ServerData `+0x21E0` =
   std::wstring **current league name** (✓ live 2026-06-22, Research `--league`) — verbatim

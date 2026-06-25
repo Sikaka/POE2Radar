@@ -55,17 +55,17 @@ public static class Poe2
     /// <summary>
     /// The big per-area container: area metadata, player, entity maps, terrain.
     /// <para>⚠ GameHelper2's internal offsets are DRIFTED in this build — confirmed by the live
-    /// probe (PlayerInfo moved from GH2's 0xA00 to ~0x580; LocalPlayer at 0x5A0). The values
+    /// probe (PlayerInfo moved from GH2's 0xA00 to ~0x598; LocalPlayer at 0x5B8). The values
     /// marked (GH2-drift) below must be re-discovered (see <c>--find-entities</c> / <c>--find-terrain</c>).</para>
     /// </summary>
     public static class AreaInstance
     {
         public const int AreaInfoPtr      = 0x0A0;  // ✓ → AreaInfo; +0x00 → UTF-16 "Code\0Name\0" (Code validated 'G1_town')
-        public const int LocalPlayer      = 0x5A0;  // ✓ → player Entity (value-scanned player matched here)
-        public const int ServerDataPtr    = 0x580;  // ✓ → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5A0). Validated 2026-06-16 via the inventory chain.
-        public const int AwakeEntities    = 0x6C0;  // ✓ StdMap of live entities (id→EntityPtr); validated size=378
-        public const int SleepingEntities = 0x6D0;  // ✓ StdMap (validated size=58)
-        public const int TerrainMetadata  = 0x8A0;  // ✓ TerrainStruct base (GH2's 0xD20 drifted)
+        public const int LocalPlayer      = 0x5B8;  // ✓ → player Entity (value-scanned player matched here). 2026-06-25 patch shifted +0x18 (was 0x5A0).
+        public const int ServerDataPtr    = 0x598;  // ✓ → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5B8). 2026-06-25 patch shifted +0x18 (was 0x580).
+        public const int AwakeEntities    = 0x6D8;  // ✓ StdMap of live entities (id→EntityPtr). 2026-06-25 patch shifted +0x18 (was 0x6C0).
+        public const int SleepingEntities = 0x6E8;  // ✓ StdMap. 2026-06-25 patch shifted +0x18 (was 0x6D0).
+        public const int TerrainMetadata  = 0x8B8;  // ✓ TerrainStruct base. 2026-06-25 patch shifted +0x18 (was 0x8A0).
         public const int CurrentAreaLevel = 0x0C4;  // ✓ int — per-area, validated 27/32 (GH2's 0xBC drifted)
         public const int CurrentAreaHash  = 0x11C;  // ✓ uint — per-area random hash (GH2's 0xFC drifted; +0x120 paired seed)
     }
