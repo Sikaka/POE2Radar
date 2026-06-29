@@ -141,6 +141,9 @@ if (HasFlag(args, "--exchange-panel3"))
 if (HasFlag(args, "--exchange-qty"))
     return RunExchangeQty(process, reader, TryGetIntArg(args, "--have") ?? 0, TryGetIntArg(args, "--want") ?? 0);
 
+if (HasFlag(args, "--exchange-read"))
+    return RunExchangeRead(process, reader);
+
 if (TryGetIntArg(args, "--findint") is { } findIntVal)
     return RunFindInt(process, reader, findIntVal, TryGetIntArg(args, "--win") ?? 0x40, TryGetIntArg(args, "--max") ?? 40,
         TryGetStrArg(args, "--near"));
@@ -5079,6 +5082,40 @@ static int RunExchangeQty(ProcessHandle process, MemoryReader reader, int have, 
         if (f != 0 && reader.TryReadStruct<nint>(el + Poe2.UiElement.ChildrenEnd, out var l))
         { var n = ((long)l - (long)f) / 8; if (n is > 0 and <= 4096) for (long i = 0; i < n; i++) tq.Enqueue((SafePtr(reader, f + (nint)(i * 8)), path + "," + i)); }
     }
+    return 0;
+}
+
+// GROUND TRUTH for the recommendation bug: run the SAME production reader the overlay uses
+// (Poe2CurrencyExchange.Read) and dump exactly what it sees — both sides, raw Get/Give/ListedCount,
+// derived ratio, and the read "I Have" quantity. Open the exchange with a pair loaded (and a quantity
+// typed) before running. This tells us which side is the sell side, the units of ListedCount, and
+// whether HaveQty reads — the three things the overlay's fill math depends on.
+static int RunExchangeRead(ProcessHandle process, MemoryReader reader)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("no chain (in game?)."); return 1; }
+
+    var ex = new Poe2CurrencyExchange(reader);
+    var book = ex.Read(igs);
+    Console.WriteLine($"\nBook.Open={book.Open}  HaveQty={book.HaveQty}  Panel=0x{book.PanelAddr:X}");
+    if (!book.Open) { Console.WriteLine("panel not resolved — is the exchange OPEN with a pair selected?"); return 0; }
+
+    void Dump(string label, IReadOnlyList<Poe2CurrencyExchange.StockEntry> side)
+    {
+        Console.WriteLine($"\n=== {label} ({side.Count} entries) ===");
+        Console.WriteLine("  idx  Get     Give    ListedCount   Get/Give   Give/Get   rest");
+        for (var i = 0; i < side.Count; i++)
+        {
+            var e = side[i];
+            double gg = e.Give != 0 ? e.Get / (double)e.Give : 0;
+            double gig = e.Get != 0 ? e.Give / (double)e.Get : 0;
+            Console.WriteLine($"  [{i,2}] {e.Get,-7} {e.Give,-7} {e.ListedCount,-13} {gg,-10:0.####} {gig,-10:0.####} {(e.IsRest ? "REST" : "")}");
+        }
+    }
+    Dump("OFFERED  (CurrencyExchange.OfferedStockVec +0x490)", book.Offered);
+    Dump("WANTED   (CurrencyExchange.WantedStockVec  +0x478)", book.Wanted);
+    Console.WriteLine("\nNote which side matches the in-game ladder for your 'I have'→'I want' pair, and what");
+    Console.WriteLine("the in-game 'you receive' total reads for the typed quantity — that pins the units.");
     return 0;
 }
 

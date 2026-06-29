@@ -781,9 +781,9 @@ public sealed class OverlayRenderer : IDisposable
         if (buy.Count > 0 && buy[0].Ratio > 0 && top.Ratio > 0)
         {
             var spreadPct = Math.Abs(top.Ratio - buy[0].Ratio) / Math.Min(top.Ratio, buy[0].Ratio) * 100.0;
-            sub = $"sell {top.Ratio:0.##}:1  ·  buy {buy[0].Ratio:0.##}:1  ·  spread {spreadPct:0.#}%";
+            sub = $"buy @ {top.Ratio:0.##}:1  ·  bid {buy[0].Ratio:0.##}:1  ·  spread {spreadPct:0.#}%";
         }
-        else sub = $"sell {top.Ratio:0.##}:1";
+        else sub = $"buy @ {top.Ratio:0.##}:1";
         rt.DrawText(sub, _tf!, new Rect(lx, cy, rx, cy + subH), _bStyle, DrawTextOptions.Clip);
         cy += subH;
 
@@ -799,8 +799,8 @@ public sealed class OverlayRenderer : IDisposable
         // Depth ladder header + bars (the signature). ratio | bar∝volume | cumulative.
         cy += sepH;
         _bStyle.Color = ColExchangeDim;
-        rt.DrawText("list ≥", _tf!, new Rect(lx, cy, lx + 52f, cy + headH), _bStyle, DrawTextOptions.Clip);
-        rt.DrawText("can move →", _tf!, new Rect(rx - 96f, cy, rx, cy + headH), _bStyle, DrawTextOptions.Clip);
+        rt.DrawText("rate", _tf!, new Rect(lx, cy, lx + 52f, cy + headH), _bStyle, DrawTextOptions.Clip);
+        rt.DrawText("depth →", _tf!, new Rect(rx - 96f, cy, rx, cy + headH), _bStyle, DrawTextOptions.Clip);
         cy += headH;
 
         const float ratioW = 52f, cumW = 52f, barGap = 6f;

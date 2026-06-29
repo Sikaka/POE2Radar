@@ -722,80 +722,103 @@ public sealed class RadarApp : IDisposable
             return;
         }
 
-        // Aggregate one side of the book: drop the "< rest" everything-below bucket(s) into a separate stock
-        // total, sort the priced rows by ratio (the caller decides direction), then walk top-down computing
-        // the running cumulative listed count and flag the first (best) row Recommended.
-        static (List<ExchangeRow> rows, double bestRatio, long restStock) Aggregate(
-            IReadOnlyList<Poe2CurrencyExchange.StockEntry> side, bool descending)
+        // Build the OFFERED ladder — the orders the user actually transacts with. Validated live 2026-06-29
+        // (Research --exchange-read, Exalt→Divine): each OFFERED entry is a counterparty selling the user's
+        // WANT currency. The user PAYS `Get` units of their HAVE currency and RECEIVES `Give` units of their
+        // WANT currency, so rate = Get/Give = HAVE-per-WANT (LOWER is the better price for the user), and
+        // `ListedCount` is that order's depth in HAVE currency (the cap on how much the user can pay into it).
+        // Sort cheapest-rate-first (the order the game fills) and accumulate HAVE-currency depth. The "< rest"
+        // everything-below bucket is dropped from the drawn rows.
+        static List<ExchangeRow> BuildSellLadder(IReadOnlyList<Poe2CurrencyExchange.StockEntry> side)
         {
-            long restStock = 0;
             var priced = new List<Poe2CurrencyExchange.StockEntry>(side.Count);
-            foreach (var e in side)
-            {
-                if (e.IsRest) { restStock += e.ListedCount; continue; }   // the "< rest" bucket → total only
-                priced.Add(e);
-            }
-            priced.Sort((a, b) => descending ? b.Ratio.CompareTo(a.Ratio) : a.Ratio.CompareTo(b.Ratio));
+            foreach (var e in side) if (!e.IsRest && e.Get > 0 && e.Give > 0 && e.ListedCount > 0) priced.Add(e);
+            priced.Sort((a, b) => a.Ratio.CompareTo(b.Ratio));   // Ratio = Get/Give = have-per-want; cheapest first
             var rows = new List<ExchangeRow>(priced.Count);
             long cum = 0;
             for (var i = 0; i < priced.Count; i++)
             {
-                // The two sides store reciprocal ratio conventions (offered ≈ Get/Give &gt; 1; wanted ≈ 1/that).
-                // Normalize each to the readable ">1 : 1" form so both ladders show the same "want-per-have" unit.
-                var r = priced[i].Ratio; if (r > 0 && r < 1) r = 1.0 / r;
-                // In-game ListedCount is in WANT units (what you receive). Convert to SELL units (what you give) =
-                // stock / ratio, so "can move N" + the fill sim are in the quantity the user is actually selling
-                // and can be compared to the "I Have" qty. (Units confirmed in-game 2026-06-29.)
-                var sellUnits = r > 0 ? (long)System.Math.Round(priced[i].ListedCount / r) : priced[i].ListedCount;
-                cum += sellUnits;
-                rows.Add(new ExchangeRow(r, sellUnits, cum, Recommended: i == 0, Give: priced[i].Give, Get: priced[i].Get));
+                long depthHave = priced[i].ListedCount;          // depth in HAVE currency (what the user pays)
+                cum += depthHave;
+                rows.Add(new ExchangeRow(priced[i].Ratio, depthHave, cum, Recommended: i == 0, Give: priced[i].Give, Get: priced[i].Get));
             }
-            return (rows, rows.Count > 0 ? rows[0].Ratio : 0.0, restStock);
+            return rows;
         }
 
-        var (offered, bestOfferedRatio, _) = Aggregate(book.Offered, descending: true);
-        var (wanted, bestWantedRatio, _) = Aggregate(book.Wanted, descending: false);
+        var offered = BuildSellLadder(book.Offered);
+        // WANTED = competing buyers (people paying their HAVE for the user's WANT). For the spread display only,
+        // express their bid in the SAME have-per-want unit: a WANTED entry GETS `Get` want-units and GIVES
+        // `Give` have-units, so its bid = Give/Get. Highest bid first.
+        var wanted = new List<ExchangeRow>();
+        {
+            var bids = new List<Poe2CurrencyExchange.StockEntry>(book.Wanted.Count);
+            foreach (var e in book.Wanted) if (!e.IsRest && e.Get > 0 && e.Give > 0 && e.ListedCount > 0) bids.Add(e);
+            bids.Sort((a, b) => (b.Give / (double)b.Get).CompareTo(a.Give / (double)a.Get));
+            long cum = 0;
+            foreach (var e in bids) { var rate = e.Give / (double)e.Get; cum += e.ListedCount; wanted.Add(new ExchangeRow(rate, e.ListedCount, cum, Recommended: false, Give: e.Give, Get: e.Get)); }
+        }
 
-        // Summary: best (normalized) ratio on each side + the spread between them. NOTE: which side is the
-        // buy vs sell, and whether stock is raw ListedCount or ×Give/Get, still need in-game validation.
+        var bestOfferedRatio = offered.Count > 0 ? offered[0].Ratio : 0.0;   // best (cheapest) price the user pays
+        var bestWantedRatio = wanted.Count > 0 ? wanted[0].Ratio : 0.0;      // best competing buy bid
+
+        // Summary (API + subtitle source): best price each side + the spread between them, all have-per-want.
         var parts = new List<string>(3);
-        if (offered.Count > 0) parts.Add($"best offered {bestOfferedRatio:0.##}:1");
-        if (wanted.Count > 0) parts.Add($"best wanted {bestWantedRatio:0.##}:1");
+        if (offered.Count > 0) parts.Add($"buy @ {bestOfferedRatio:0.##}:1");
+        if (wanted.Count > 0) parts.Add($"bid {bestWantedRatio:0.##}:1");
         if (offered.Count > 0 && wanted.Count > 0 && bestOfferedRatio > 0 && bestWantedRatio > 0)
         {
             var spreadPct = System.Math.Abs(bestOfferedRatio - bestWantedRatio) / System.Math.Min(bestOfferedRatio, bestWantedRatio) * 100.0;
             parts.Add($"spread {spreadPct:0.#}%");
         }
 
-        // RECOMMENDED SALE RATIO (the headline): the best (highest) ratio at which the user's "I Have"
-        // quantity fully fills — i.e. the top tier whose CUMULATIVE depth already covers it. Snap the listing
-        // to whole "lots" (multiples of that tier's integer Give) so the give→get amounts are clean numbers.
-        // No quantity set → suggest one clean lot at the top of book. Quantity beyond all depth → recommend
-        // the deepest tier (captures everything available now) and flag the overflow. SELL ladder = OFFERED.
+        // RECOMMENDED FILL (the headline): simulate the game filling the user's "I Have" quantity against the
+        // sell ladder, cheapest tier first, accumulating the WANT units received (= pay / rate). Then recommend
+        // the clean WHOLE-want-unit result: the HAVE spent to receive exactly `whole` want units, the blended
+        // rate, and any HAVE left over. (e.g. 1000 exalt → "spend 974 → get 2  @ 487:1  ·  26 left".)
         var fillNote = "";
         var haveQty = book.HaveQty;
         if (offered.Count > 0)
         {
-            var top = offered[0];
             if (haveQty <= 0)
             {
-                fillNote = top.Give > 1
-                    ? $"Sell @ {top.Ratio:0.##}:1  ·  lot {top.Give:N0} → {top.Get:N0}"
-                    : $"Sell @ {top.Ratio:0.##}:1  ·  set 'I have' to size it";
+                fillNote = $"best @ {bestOfferedRatio:0.##}:1  ·  set 'I have' to size it";
             }
             else
             {
-                var totalDepth = offered[^1].CumStock;
-                ExchangeRow tier = offered[^1]; long cap = totalDepth;
-                if (haveQty <= totalDepth) { tier = top; foreach (var r in offered) if (r.CumStock >= haveQty) { tier = r; break; } cap = haveQty; }
-                var give = tier.Give > 0 ? tier.Give : 1;
-                long recGive, recGet;
-                if (give > 1 && cap >= give) { var lots = cap / give; recGive = lots * give; recGet = lots * (tier.Get > 0 ? tier.Get : (long)Math.Round(give * tier.Ratio)); }
-                else { recGive = cap; recGet = (long)Math.Round(cap * tier.Ratio); }
-                var leftover = haveQty - recGive;
-                fillNote = leftover > 0
-                    ? $"Sell @ {tier.Ratio:0.##}:1  ·  list {recGive:N0} → {recGet:N0}  ({leftover:N0} over depth)"
-                    : $"Sell @ {tier.Ratio:0.##}:1  ·  list {recGive:N0} → {recGet:N0}";
+                long remaining = haveQty;   // HAVE-currency still to spend
+                double received = 0;        // WANT-currency received (fractional)
+                foreach (var r in offered)
+                {
+                    if (remaining <= 0) break;
+                    long pay = System.Math.Min(remaining, r.Stock);   // r.Stock = HAVE-currency depth at this tier
+                    if (r.Ratio > 0) received += pay / r.Ratio;       // want received = have paid / (have-per-want)
+                    remaining -= pay;
+                }
+                var whole = (long)System.Math.Floor(received);
+                if (whole <= 0)
+                {
+                    // not even one whole want-unit fills — show the fractional result + effective rate
+                    var eff = received > 0 ? (haveQty - remaining) / received : bestOfferedRatio;
+                    fillNote = $"{haveQty:N0} → {received:0.##}  @ {eff:0.##}:1";
+                }
+                else
+                {
+                    // HAVE needed for exactly `whole` want units: re-sweep, stopping once `whole` is reached.
+                    long payForWhole = 0; double acc = 0;
+                    foreach (var r in offered)
+                    {
+                        if (acc >= whole || r.Ratio <= 0) break;
+                        var needWant = whole - acc;                                  // want units still needed
+                        var canWant = System.Math.Min(needWant, r.Stock / r.Ratio);  // want available at this tier
+                        payForWhole += (long)System.Math.Ceiling(canWant * r.Ratio); // have for that
+                        acc += canWant;
+                    }
+                    var effRate = payForWhole / (double)whole;
+                    var leftover = haveQty - payForWhole;
+                    fillNote = leftover > 0
+                        ? $"spend {payForWhole:N0} → get {whole:N0}  @ {effRate:0.##}:1  ·  {leftover:N0} left"
+                        : $"spend {payForWhole:N0} → get {whole:N0}  @ {effRate:0.##}:1";
+                }
             }
         }
         // Pin anchor: the exchange panel's screen rect (read live on its own element) so the renderer can
