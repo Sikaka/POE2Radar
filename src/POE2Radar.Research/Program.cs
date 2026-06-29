@@ -15,7 +15,10 @@ using POE2Radar.Research;
 Console.WriteLine("POE2Radar.Research");
 Console.WriteLine("==================");
 
-using var process = ProcessHandle.AttachToPoE();
+// --pid <N> forces attach to a specific process (needed when PoE1 + PoE2 run side by side, since both
+// match the candidate names and AttachToPoE would otherwise grab whichever it finds first).
+var pidArg = TryGetIntArg(args, "--pid");
+using var process = pidArg is { } pid ? ProcessHandle.AttachToProcess(pid) : ProcessHandle.AttachToPoE();
 if (process is null)
 {
     Console.Error.WriteLine("PoE2 not running (no matching process found).");
@@ -99,6 +102,52 @@ if (TryGetStrArg(args, "--lootstruct") is { } lootName)
 
 if (HasFlag(args, "--lootmap"))
     return RunLootMap(process, reader);
+
+if (HasFlag(args, "--lootresolve"))
+    return RunLootResolve(process, reader);
+
+if (HasFlag(args, "--exchange"))
+    return RunExchange(process, reader, TryGetStrArg(args, "--stocks"), TryGetStrArg(args, "--ratios"), HasFlag(args, "--deep"));
+
+if (TryGetStrArg(args, "--exchange-pairs") is { } pairsArg)
+    return RunExchangePairs(process, reader, pairsArg);
+
+if (HasFlag(args, "--mouseover"))
+    return RunMouseOver(process, reader,
+        TryGetHexArg(args, "--h") ?? 0x300, TryGetHexArg(args, "--s") ?? 0x3F0, TryGetHexArg(args, "--e") ?? 0xA8,
+        HasFlag(args, "--scan"), HasFlag(args, "--hunt"));
+
+if (HasFlag(args, "--exchange-orders"))
+    return RunExchangeOrders(process, reader,
+        (float)(TryGetIntArg(args, "--lo-milli") ?? 2600) / 1000f, (float)(TryGetIntArg(args, "--hi-milli") ?? 3050) / 1000f,
+        TryGetIntArg(args, "--minrun") ?? 4);
+
+if (HasFlag(args, "--exchange-anchor"))
+    return RunExchangeAnchor(process, reader,
+        (float)(TryGetIntArg(args, "--lo-milli") ?? 2600) / 1000f, (float)(TryGetIntArg(args, "--hi-milli") ?? 3050) / 1000f);
+
+if (HasFlag(args, "--exchange-vec"))
+    return RunExchangeVec(process, reader, (float)(TryGetIntArg(args, "--ratio-milli") ?? 0) / 1000f);
+
+if (HasFlag(args, "--exchange-trace"))
+    return RunExchangeTrace(process, reader, (float)(TryGetIntArg(args, "--ratio-milli") ?? 0) / 1000f);
+
+if (HasFlag(args, "--exchange-vec2"))
+    return RunExchangeVec2(process, reader, (float)(TryGetIntArg(args, "--ratio-milli") ?? 0) / 1000f);
+
+if (HasFlag(args, "--exchange-panel3"))
+    return RunExchangePanel3(process, reader, TryGetStrArg(args, "--text") ?? "Market Ratio");
+
+if (HasFlag(args, "--exchange-qty"))
+    return RunExchangeQty(process, reader, TryGetIntArg(args, "--have") ?? 0, TryGetIntArg(args, "--want") ?? 0);
+
+if (TryGetIntArg(args, "--findint") is { } findIntVal)
+    return RunFindInt(process, reader, findIntVal, TryGetIntArg(args, "--win") ?? 0x40, TryGetIntArg(args, "--max") ?? 40,
+        TryGetStrArg(args, "--near"));
+
+if (TryGetStrArg(args, "--findf") is { } findfArg && float.TryParse(findfArg, out var findfVal))
+    return RunFindFloat(process, reader, findfVal, (float)(TryGetIntArg(args, "--eps-milli") ?? 1) / 1000f,
+        TryGetIntArg(args, "--win") ?? 0x40, TryGetIntArg(args, "--max") ?? 30);
 
 if (TryGetStrArg(args, "--lootwatch") is { } lootWatchName)
     return RunLootWatch(process, reader, lootWatchName);
@@ -339,6 +388,9 @@ if (TryGetHexArg(args, "--find") is { } needle)
 
 if (TryGetHexArg(args, "--dump") is { } dumpAddr)
     return RunDump(reader, dumpAddr, TryGetIntArg(args, "--dump-len") ?? 256);
+
+if (TryGetHexArg(args, "--dumpf") is { } dumpfAddr)
+    return RunDumpFloat(reader, dumpfAddr, TryGetIntArg(args, "--dump-len") ?? 0x120);
 
 if (TryGetHexArg(args, "--entity") is { } entAddr)
     return RunEntityProbe(reader, entAddr);
@@ -4527,6 +4579,1120 @@ static int RunLootMap(ProcessHandle process, MemoryReader reader)
             }
         }
     }
+
+    // ── What I actually need to ship a robust fix ──────────────────────────────────────────────
+    // (A) STABLE ANCHOR: is bestEl a UiElement, and what is its child-index path from UiRoot? If the
+    //     container is reachable by a fixed chain of Children indices, the overlay can resolve it each
+    //     scan with NO whole-tree walk (and confine name-matching to its subtree → no false positives).
+    Console.WriteLine($"\n=== container anchor: is it a UiElement + path from UiRoot ===");
+    Console.WriteLine($"  bestEl Self-check: Self={(SafePtr(reader, bestEl + Poe2.UiElement.Self) == bestEl ? "== self (IS a UiElement)" : "!= self (NOT a plain UiElement)")}");
+    // Map parent -> child-index for the path. Walk parents to UiRoot, recording each element's index in its parent's Children.
+    var path = new List<(nint el, int idx, long childN, uint flags)>();
+    {
+        var c = bestEl;
+        for (var lvl = 0; lvl < 24 && c != 0; lvl++)
+        {
+            var parent = SafePtr(reader, c + Poe2.UiElement.Parent);
+            var idx = -1;
+            if (parent != 0)
+            {
+                var pf = SafePtr(reader, parent + Poe2.UiElement.Children);
+                if (pf != 0 && reader.TryReadStruct<nint>(parent + Poe2.UiElement.ChildrenEnd, out var pl))
+                {
+                    var pn = ((long)pl - (long)pf) / 8;
+                    for (long i = 0; i < pn && i < 4096; i++) if (SafePtr(reader, pf + (nint)(i * 8)) == c) { idx = (int)i; break; }
+                }
+            }
+            reader.TryReadStruct<uint>(c + Poe2.UiElement.Flags, out var fl);
+            long cn = 0; var cf = SafePtr(reader, c + Poe2.UiElement.Children);
+            if (cf != 0 && reader.TryReadStruct<nint>(c + Poe2.UiElement.ChildrenEnd, out var cl)) cn = ((long)cl - (long)cf) / 8;
+            path.Add((c, idx, cn, fl));
+            if (c == uiRoot) break;
+            c = parent;
+        }
+    }
+    path.Reverse();
+    Console.WriteLine("  path UiRoot → container (use the idx chain as the stable anchor; flags as a fingerprint):");
+    foreach (var (el, idx, childN, flags) in path)
+        Console.WriteLine($"    0x{el:X}  childIdx={idx,-4} children={childN,-4} flags=0x{flags:X8}{(el == uiRoot ? "  <= UiRoot" : el == bestEl ? "  <= CONTAINER" : "")}");
+    Console.WriteLine($"  => index path: [{string.Join(", ", path.Where(p => p.el != uiRoot).Select(p => p.idx))}]");
+
+    // (B) PER-ENTRY LABEL: for each on-ground item ptr in the container's inline block, scan the 0x80-aligned
+    //     block around it for a UiElement ptr whose text matches → that entry's label element + its offset.
+    Console.WriteLine($"\n=== per-entry label element (scan ±0x40 around each item ptr for a text UiElement) ===");
+    var itemOffs = new List<int>();
+    for (var off = 0; off <= 0x1200; off += 8) { var v = SafePtr(reader, bestEl + off); if (v != 0 && item.ContainsKey((long)v)) itemOffs.Add(off); }
+    foreach (var io in itemOffs)
+    {
+        var iv = SafePtr(reader, bestEl + io);
+        Console.WriteLine($"  item @container+0x{io:X} = 0x{iv:X} {item.GetValueOrDefault((long)iv, "?")}");
+        for (var d = -0x40; d <= 0x48; d += 8)
+        {
+            var v = SafePtr(reader, bestEl + io + d);
+            if (!IsUi(v)) continue;
+            var txt = ReadStdWString(reader, v + Poe2.UiElement.Text);
+            var first = txt.Length > 0 ? txt.Split('\n')[0] : "";
+            reader.TryReadStruct<uint>(v + Poe2.UiElement.Flags, out var lf);
+            var lblVis = (lf & (1u << Poe2.UiElement.FlagVisibleBit)) != 0;
+            Console.WriteLine($"     {(d < 0 ? "-" : "+")}0x{Math.Abs(d):X2} = 0x{v:X}  UiElement vis={(lblVis ? "Y" : "n")} text=\"{first}\"");
+        }
+    }
+
+    // (C) ENTRY STRIDE: confirm spacing between consecutive item ptrs (drives the inline-array read).
+    if (itemOffs.Count >= 2)
+        Console.WriteLine($"\n  item-ptr offsets: [{string.Join(", ", itemOffs.Select(o => $"0x{o:X}"))}]  strides: [{string.Join(", ", Enumerable.Range(1, itemOffs.Count - 1).Select(i => $"0x{itemOffs[i] - itemOffs[i - 1]:X}"))}]");
+    return 0;
+}
+
+// Validate the SHIPPED ground-label resolver: replicate Poe2Live.ResolveGroundLabelContainer's
+// flags-fingerprint walk (Poe2.GroundLabels.ContainerFlagFingerprints) from GameUi, then BFS the
+// resolved container's subtree exactly like ScanLootLabels and print every visible text element it
+// would feed to the price matcher. Run with items on the ground + PoE2 focused. A correct result is:
+// resolves a container, and the listed texts are ONLY on-ground item names — no panel/HUD text.
+static int RunLootResolve(ProcessHandle process, MemoryReader reader)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("Could not resolve chain (in game?)."); return 1; }
+    var gameUi = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
+    if (gameUi == 0) { Console.Error.WriteLine("no GameUi."); return 1; }
+    const uint visibleMask = 1u << Poe2.UiElement.FlagVisibleBit;
+    var fps = Poe2.GroundLabels.ContainerFlagFingerprints;
+
+    bool Span(nint el, out nint first, out long n)
+    {
+        first = SafePtr(reader, el + Poe2.UiElement.Children); n = 0;
+        if (first == 0 || !reader.TryReadStruct<nint>(el + Poe2.UiElement.ChildrenEnd, out var last)) return false;
+        n = ((long)last - (long)first) / 8; return n is > 0 and <= 4000;
+    }
+    nint Walk(nint parent, int step)
+    {
+        if (step == fps.Length) return parent;
+        if (!Span(parent, out var first, out var n)) return 0;
+        var target = fps[step] & ~visibleMask;
+        for (long i = 0; i < n; i++)
+        {
+            var child = SafePtr(reader, first + (nint)(i * 8));
+            if (child == 0 || !reader.TryReadStruct<uint>(child + Poe2.UiElement.Flags, out var fl)) continue;
+            if ((fl & ~visibleMask) != target) continue;
+            var deeper = Walk(child, step + 1);
+            if (deeper != 0) return deeper;
+        }
+        return 0;
+    }
+
+    var container = Walk(gameUi, 0);
+    Console.WriteLine($"fingerprints: [{string.Join(", ", fps.Select(f => $"0x{f:X}"))}]");
+    if (container == 0) { Console.WriteLine("RESOLVE FAILED — fingerprint path not found (re-fingerprint via --lootstruct)."); return 0; }
+    Console.WriteLine($"*** RESOLVED ItemsOnGroundLabelElement = 0x{container:X} ***");
+    Span(container, out _, out var cn);
+    Console.WriteLine($"container children = {cn}\n");
+
+    // BFS the container subtree (visible only) exactly like ScanLootLabels.
+    var q = new Queue<nint>(); q.Enqueue(container); var seen = new HashSet<nint>(); var labels = 0;
+    while (q.Count > 0 && seen.Count < 20000)
+    {
+        var el = q.Dequeue(); if (el == 0 || !seen.Add(el)) continue;
+        var visible = reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var fl) && (fl & visibleMask) != 0;
+        if (!visible && el != container) continue;
+        if (Span(el, out var f, out var n)) for (long k = 0; k < n; k++) q.Enqueue(SafePtr(reader, f + (nint)(k * 8)));
+        var t = ReadStdWString(reader, el + Poe2.UiElement.Text);
+        if (t.Length < 2) continue;
+        var nl = t.IndexOf('\n'); var firstLine = (nl >= 0 ? t[..nl] : t).Trim();
+        if (firstLine.Length >= 2) { Console.WriteLine($"  label 0x{el:X} \"{firstLine}\""); labels++; }
+    }
+    Console.WriteLine($"\n{labels} text element(s) in scope — these are the ONLY things the price matcher sees.");
+    return 0;
+}
+
+// ── MouseOver entity (entity under the cursor, monsters included) ──────────────────────────────────
+// Community chain (verified PoE2 v0.5.4): InGameState +0x300 → host, +0x3F0 → sub, +0xA8 → entity (0 when
+// nothing hovered). Offsets may have drifted since (the 2026-06-25 patch shifted the entity block +0x18),
+// so they're adjustable (--h/--s/--e) and `--scan` brute-searches a window around each hop for a combo that
+// yields a valid "Metadata/" entity. Polls ~10 Hz for ~15 s: hover monsters / NPCs / ground items / UI and
+// watch the resolved entity change. A working hover→entity link is gold for mapping (instant ground-truth
+// for any element/entity, no BFS or value-scan).
+static int RunMouseOver(ProcessHandle process, MemoryReader reader, nint hOff, nint sOff, nint eOff, bool scan, bool hunt)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("Could not resolve chain (in game?)."); return 1; }
+    Console.WriteLine($"InGameState 0x{igs:X}  chain offsets host=+0x{hOff:X} sub=+0x{sOff:X} ent=+0x{eOff:X}");
+
+    bool Valid(nint ent) => ent != 0 && ReadEntityMetadata(reader, ent).StartsWith("Metadata/", StringComparison.Ordinal);
+    nint Resolve(nint h, nint s, nint e)
+    {
+        var host = SafePtr(reader, igs + h); if (host == 0) return 0;
+        var sub = SafePtr(reader, host + s); if (sub == 0) return 0;
+        return SafePtr(reader, sub + e);
+    }
+
+    // HUNT: the real mouseover combo is the one whose entity CHANGES as the cursor sweeps over different
+    // objects (a decoy stays constant). Poll a candidate grid for ~14 s and rank by distinct valid entities.
+    if (hunt)
+    {
+        var hCand = new nint[] { 0x2E8, 0x2F0, 0x2F8, 0x300, 0x308, 0x310, 0x318, 0x320 };
+        var sCand = new nint[] { 0x3E0, 0x3E8, 0x3F0, 0x3F8, 0x400, 0x408, 0x410, 0x418, 0x420 };
+        var eCand = new nint[] { 0x80, 0x88, 0x90, 0x98, 0xA0, 0xA8, 0xB0 };
+        var seen = new Dictionary<(nint, nint, nint), HashSet<nint>>();
+        var lastMeta = new Dictionary<(nint, nint, nint), string>();
+        Console.WriteLine($"HUNT: polling {hCand.Length * sCand.Length * eCand.Length} combos ~14 s — SWEEP the cursor over several different monsters/NPCs/doodads now…");
+        var hsw = System.Diagnostics.Stopwatch.StartNew();
+        while (hsw.ElapsedMilliseconds < 14000)
+        {
+            foreach (var h in hCand)
+            {
+                var host = SafePtr(reader, igs + h); if (host == 0) continue;
+                foreach (var s in sCand)
+                {
+                    var sub = SafePtr(reader, host + s); if (sub == 0) continue;
+                    foreach (var e in eCand)
+                    {
+                        var ent = SafePtr(reader, sub + e);
+                        if (!Valid(ent)) continue;
+                        var key = (h, s, e);
+                        if (!seen.TryGetValue(key, out var set)) seen[key] = set = new();
+                        set.Add(ent);
+                        lastMeta[key] = ReadEntityMetadata(reader, ent);
+                    }
+                }
+            }
+            System.Threading.Thread.Sleep(120);
+        }
+        var ranked = seen.Where(kv => kv.Value.Count >= 2).OrderByDescending(kv => kv.Value.Count).ToList();
+        Console.WriteLine($"\n{ranked.Count} combos yielded ≥2 distinct entities (cursor-tracking candidates):");
+        foreach (var kv in ranked.Take(15))
+            Console.WriteLine($"  host=+0x{kv.Key.Item1:X} sub=+0x{kv.Key.Item2:X} ent=+0x{kv.Key.Item3:X}  distinct={kv.Value.Count}  last={lastMeta[kv.Key]}");
+        if (ranked.Count == 0) Console.WriteLine("  none changed — try sweeping over more varied world objects, or the chain differs from the documented shape.");
+        return 0;
+    }
+
+    // Validate / self-heal the chain first (hover something solid, e.g. an NPC, before running).
+    var host0 = SafePtr(reader, igs + hOff);
+    var sub0 = host0 == 0 ? 0 : SafePtr(reader, host0 + sOff);
+    var ent0 = sub0 == 0 ? 0 : SafePtr(reader, sub0 + eOff);
+    Console.WriteLine($"  host=0x{host0:X}  sub=0x{sub0:X}  ent=0x{ent0:X}  {(Valid(ent0) ? "VALID: " + ReadEntityMetadata(reader, ent0) : "(not a valid entity with defaults)")}");
+    if (!Valid(ent0) && scan)
+    {
+        Console.WriteLine("  brute-scanning hop offsets for a valid entity (hover an NPC/monster)…");
+        nint bh = 0, bs = 0, be = 0; var done = false;
+        for (var h = hOff - 0x40; h <= hOff + 0x40 && !done; h += 8)
+        for (var s = sOff - 0x40; s <= sOff + 0x40 && !done; s += 8)
+        for (var e = eOff - 0x20; e <= eOff + 0x20 && !done; e += 8)
+            if (Valid(Resolve(h, s, e))) { bh = h; bs = s; be = e; done = true; }
+        if (done) { Console.WriteLine($"  *** FOUND chain: host=+0x{bh:X} sub=+0x{bs:X} ent=+0x{be:X} → {ReadEntityMetadata(reader, Resolve(bh, bs, be))} ***"); (hOff, sOff, eOff) = (bh, bs, be); }
+        else { Console.WriteLine("  no valid combo in the ±0x40 window — hover a real entity, or the chain changed more."); return 0; }
+    }
+
+    Console.WriteLine("\nHover monsters / NPCs / ground items now (PoE2 focused). Polling ~15 s…\n");
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    nint last = -1;
+    while (sw.ElapsedMilliseconds < 15000)
+    {
+        var ent = Resolve(hOff, sOff, eOff);
+        if (ent != last)
+        {
+            last = ent;
+            if (ent == 0) Console.WriteLine($"  [{sw.ElapsedMilliseconds,5}ms] (nothing hovered)");
+            else
+            {
+                var meta = ReadEntityMetadata(reader, ent);
+                reader.TryReadStruct<uint>(ent + Poe2.Entity.Id, out var id);
+                var render = ResolveComponentAddr(reader, ent, "Render");
+                var grid = "";
+                if (render != 0 && reader.TryReadStruct<System.Numerics.Vector3>(render + Poe2.Render.CurrentWorldPosition, out var w))
+                    grid = $" grid=({w.X / Poe2.WorldToGridRatio:0},{w.Y / Poe2.WorldToGridRatio:0})";
+                Console.WriteLine($"  [{sw.ElapsedMilliseconds,5}ms] ent=0x{ent:X} id={id}{grid}  {meta}");
+            }
+        }
+        System.Threading.Thread.Sleep(80);
+    }
+    Console.WriteLine("done.");
+    return 0;
+}
+
+// ── Currency Exchange market deep-dive ───────────────────────────────────────────────────────────
+// Goal: locate the underlying order-book dataset behind the currency-exchange "market ratio" window so
+// the overlay can read the full bid/ask ladder (ratio + stock per level) and recommend a sell price.
+// TWO MODES:
+//   --exchange                       → UI mode: BFS the UI tree, dump every VISIBLE text element with its
+//                                       screen rect + the big child-count containers. Run with the exchange
+//                                       window open (and HOVER the market-ratio bar so the order rows render)
+//                                       to map the panel and see whether the ladder is readable as UI text.
+//   --exchange --stocks 5952,10934 [--ratios 496.7,495]
+//                                     → SCAN mode: value-scan all private memory for those exact stock
+//                                       int32s (and ratio floats), then cluster co-located hits — an order
+//                                       book is an ARRAY where stock ints sit next to ratio floats at a fixed
+//                                       stride. Reports the cluster base, stride, and an annotated dump so we
+//                                       can pin the struct layout. (Read the live values off the tooltip and
+//                                       pass them immediately — they drift as orders fill.)
+static int RunExchange(ProcessHandle process, MemoryReader reader, string? stocksArg, string? ratiosArg, bool deep)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("Could not resolve chain (in game?)."); return 1; }
+
+    var stocks = (stocksArg ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(s => int.TryParse(s, out var v) ? v : 0).Where(v => v != 0).ToArray();
+    var ratios = (ratiosArg ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(s => float.TryParse(s, out var v) ? v : 0f).Where(v => v != 0f).ToArray();
+
+    if (stocks.Length > 0 || ratios.Length > 0)
+        return RunExchangeScan(process, reader, stocks, ratios);
+
+    // ── UI mode ──────────────────────────────────────────────────────────────────────────────────
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
+    if (uiRoot == 0) { Console.Error.WriteLine("no UiRoot."); return 1; }
+    float winW = 2560, winH = 1600; var hwnd = Win.GetForegroundWindow();
+    if (hwnd != 0 && Win.GetClientRect(hwnd, out var rc) && rc.right > 0) { winW = rc.right; winH = rc.bottom; }
+    Console.WriteLine($"UiRoot 0x{uiRoot:X}  window {winW:0}x{winH:0}");
+    const uint visBit = 1u << Poe2.UiElement.FlagVisibleBit;
+
+    (float x, float y, float w, float h) Rect(nint el)
+    {
+        reader.TryReadStruct<byte>(el + Poe2.UiElement.ScaleIndex, out var sidx);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMul, out var smul);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
+        var (ux, uy) = RfUnscaledPos(reader, el, 0);
+        float v2 = winH / 1600f, v1 = winW / 2560f;
+        float scl = sidx == 2 ? v2 : sidx == 1 ? v1 : (sidx == 3 ? v2 : (smul == 0 ? 1 : smul));
+        return (ux * (sidx == 3 ? v1 : scl), uy * scl, sw * (sidx == 3 ? v1 : scl), sh * scl);
+    }
+
+    var q = new Queue<(nint el, int d)>(); q.Enqueue((uiRoot, 0));
+    var seen = new HashSet<nint>();
+    var texts = new List<(nint el, int d, float x, float y, string t)>();
+    var containers = new List<(nint el, int d, long n)>();
+    while (q.Count > 0 && seen.Count < 120000)
+    {
+        var (el, d) = q.Dequeue();
+        if (el == 0 || !seen.Add(el)) continue;
+        if (SafePtr(reader, el + Poe2.UiElement.Self) != el) continue;
+        var visible = reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var fl) && (fl & visBit) != 0;
+        if (!deep && !visible && el != uiRoot) continue;     // --deep walks hidden subtrees too (find pre-built rows)
+        var first = SafePtr(reader, el + Poe2.UiElement.Children);
+        if (first != 0 && reader.TryReadStruct<nint>(el + Poe2.UiElement.ChildrenEnd, out var last))
+        {
+            var n = ((long)last - (long)first) / 8;
+            if (n is > 0 and <= 8192) { for (long k = 0; k < n; k++) q.Enqueue((SafePtr(reader, first + (nint)(k * 8)), d + 1)); if (n >= 6) containers.Add((el, d, n)); }
+        }
+        var t = ReadStdWString(reader, el + Poe2.UiElement.Text);
+        if (t.Length >= 1) { var (x, y, _, _) = Rect(el); texts.Add((el, d, x, y, t.Replace("\n", " / "))); }
+    }
+
+    bool RowLike(string t) => t.Count(char.IsDigit) >= 2 && (t.Contains(':') || t.Contains('.'));
+    var shown = deep ? texts.Where(e => RowLike(e.t)).ToList() : texts;
+    Console.WriteLine($"\n=== {(deep ? $"{shown.Count} ladder-like (of {texts.Count} total, incl. hidden)" : $"{texts.Count} visible")} text elements (sorted top→bottom, left→right) ===");
+    foreach (var (el, d, x, y, t) in shown.OrderBy(e => e.y).ThenBy(e => e.x))
+    {
+        var rowish = RowLike(t);
+        Console.WriteLine($"  {(rowish ? "*" : " ")} 0x{el:X} d{d,2} ({x,5:0},{y,5:0}) \"{(t.Length > 70 ? t[..70] + "…" : t)}\"");
+    }
+
+    Console.WriteLine($"\n=== containers with ≥6 children (the order ladder is likely one of these) ===");
+    foreach (var (el, d, n) in containers.OrderByDescending(c => c.n).Take(25))
+    {
+        var (x, y, w, h) = Rect(el);
+        Console.WriteLine($"  0x{el:X} d{d,2} children={n,-4} rect=({x:0},{y:0} {w:0}x{h:0})");
+    }
+
+    // AUTO value-scan (no drift): the hover tooltip's ladder rows are visible row-like text in the exchange
+    // panel region. Extract their stock ints + ratio floats and scan THIS SAME instant.
+    var autoStocks = new HashSet<int>(); var autoRatios = new HashSet<float>();
+    foreach (var (_, _, x, y, t) in texts)
+    {
+        if (!RowLike(t) || x < 550 || x > 1300 || y < 108 || y > 923) continue;  // exchange panel region only
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(t, @"\d[\d,]*\.?\d*"))
+        {
+            var raw = m.Value.Replace(",", "");
+            if (raw.Contains('.')) { if (float.TryParse(raw, out var f) && f is > 1f and < 1e6f) autoRatios.Add(f); }
+            else if (int.TryParse(raw, out var iv) && iv >= 100) autoStocks.Add(iv);
+        }
+    }
+    if (autoStocks.Count + autoRatios.Count >= 2)
+    {
+        Console.WriteLine($"\n=== AUTO value-scan from hovered ladder (no drift) ===");
+        return RunExchangeScan(process, reader, autoStocks.ToArray(), autoRatios.ToArray());
+    }
+    Console.WriteLine("\nNo ladder rows detected in the panel region — HOVER the Market Ratio bar and re-run, " +
+        "or pass --stocks <a,b,c> [--ratios <x,y>] read off the tooltip to value-scan manually.");
+    return 0;
+}
+
+// Find every int32 == value across private memory and float-dump each hit's neighborhood. For pinning a
+// single rare/unique value (e.g. the big stock 7281) and seeing the struct it lives in.
+static int RunFindInt(ProcessHandle process, MemoryReader reader, int value, int win, int max, string? nearArg)
+{
+    var near = (nearArg ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(s => int.TryParse(s, out var v) ? v : 0).Where(v => v != 0).ToHashSet();
+    Console.WriteLine($"scanning for int32 == {value} (±0x{win:X} float-aware){(near.Count > 0 ? $"; keep only hits with ≥2 of [{string.Join(",", near)}] within ±0x{win:X}" : "")}…");
+    var hits = new List<nint>();
+    var buf = new byte[1 << 20];
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: true, excludeImage: true))
+    {
+        for (long o = 0; o < rs; o += buf.Length - 4)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 4 <= got; i += 4) if (BitConverter.ToInt32(buf, i) == value) hits.Add(rb + (nint)(o + i));
+            if (hits.Count > 5000) break;
+        }
+        if (hits.Count > 5000) break;
+    }
+    // Optional companion filter: keep a hit only if ≥2 distinct `near` values appear within ±win bytes.
+    var kept = hits;
+    if (near.Count > 0)
+    {
+        kept = new List<nint>();
+        var nb = new byte[win * 2 + 4];
+        foreach (var h in hits)
+        {
+            var n = reader.TryReadBytes(h - win, nb); if (n <= 0) continue;
+            var found = new HashSet<int>();
+            for (var i = 0; i + 4 <= n; i += 4) { var v = BitConverter.ToInt32(nb, i); if (near.Contains(v)) found.Add(v); }
+            if (found.Count >= 2) kept.Add(h);
+        }
+    }
+    Console.WriteLine($"{hits.Count} raw hits{(near.Count > 0 ? $", {kept.Count} with ladder companions nearby" : "")}.\n");
+    foreach (var h in kept.Take(max))
+    {
+        Console.WriteLine($"=== hit @0x{h:X} ===");
+        RunDumpFloat(reader, h - win, win * 2);
+        Console.WriteLine();
+    }
+    return 0;
+}
+
+// Find float32 ≈ value (tight epsilon) and float-dump each hit's neighborhood — for pinning a precise
+// per-order ratio (e.g. 2.9601) and revealing the order record (amount + currency ids) around it.
+static int RunFindFloat(ProcessHandle process, MemoryReader reader, float value, float eps, int win, int max)
+{
+    Console.WriteLine($"scanning for float32 in [{value - eps:0.####},{value + eps:0.####}] (±0x{win:X} float-aware)…");
+    var hits = new List<nint>();
+    var buf = new byte[1 << 20];
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: true, excludeImage: true))
+    {
+        for (long o = 0; o < rs; o += buf.Length - 4)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 4 <= got; i += 4) { var f = BitConverter.ToSingle(buf, i); if (Math.Abs(f - value) <= eps) hits.Add(rb + (nint)(o + i)); }
+            if (hits.Count > 5000) break;
+        }
+        if (hits.Count > 5000) break;
+    }
+    Console.WriteLine($"{hits.Count} hits.\n");
+    foreach (var h in hits.Take(max))
+    {
+        Console.WriteLine($"=== hit @0x{h:X} ===");
+        RunDumpFloat(reader, h - win, win * 2);
+        Console.WriteLine();
+    }
+    return 0;
+}
+
+// Find the "I have" / "I want" QUANTITY fields in the exchange panel. Resolve the panel (Market Ratio parent),
+// then scan its struct (and one pointer-hop) for the known live values (--have N --want M) as int32 AND as
+// UTF-16 text — the count inputs are pointers near the panel vectors (PoE1 OfferedItemCountInputPtr@0x3E8).
+static int RunExchangeQty(ProcessHandle process, MemoryReader reader, int have, int want)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
+    if (uiRoot == 0) { Console.Error.WriteLine("no UiRoot."); return 1; }
+    if (have == 0 && want == 0) { Console.Error.WriteLine("pass --have <N> and/or --want <M> (the live values you set)."); return 1; }
+
+    // panel = parent of the "Market Ratio" text element.
+    nint mr = 0; var q = new Queue<nint>(); q.Enqueue(uiRoot); var seen = new HashSet<nint>();
+    while (q.Count > 0 && seen.Count < 200000 && mr == 0)
+    {
+        var e = q.Dequeue(); if (e == 0 || !seen.Add(e) || SafePtr(reader, e + Poe2.UiElement.Self) != e) continue;
+        var f = SafePtr(reader, e + Poe2.UiElement.Children);
+        if (f != 0 && reader.TryReadStruct<nint>(e + Poe2.UiElement.ChildrenEnd, out var l))
+        { var n = ((long)l - (long)f) / 8; if (n is > 0 and <= 16384) for (long i = 0; i < n; i++) q.Enqueue(SafePtr(reader, f + (nint)(i * 8))); }
+        if (ReadStdWString(reader, e + Poe2.UiElement.Text).Contains("Market Ratio", StringComparison.OrdinalIgnoreCase)) mr = e;
+    }
+    if (mr == 0) { Console.WriteLine("Market Ratio element not found (exchange open?)."); return 0; }
+    var panel = SafePtr(reader, mr + Poe2.UiElement.Parent);
+    Console.WriteLine($"panel = 0x{panel:X}; scanning for have={have} want={want}\n");
+
+    var body = new byte[0x1A00];
+    var got = reader.TryReadBytes(panel, body);
+    void ScanInts(byte[] buf, int n, string who, nint baseAddr)
+    {
+        for (var o = 0; o + 4 <= n; o += 4)
+        {
+            var v = BitConverter.ToInt32(buf, o);
+            if ((have != 0 && v == have) || (want != 0 && v == want))
+                Console.WriteLine($"  {who} +0x{o:X3} int32 = {v}{(v == have ? "  <HAVE" : "  <WANT")}");
+        }
+    }
+    Console.WriteLine("=== panel struct (inline int32) ===");
+    ScanInts(body, got, "panel", panel);
+    // UTF-16 text "10"/"500" inside the panel struct (input fields may store the typed text)
+    foreach (var (val, tag) in new[] { (have, "HAVE"), (want, "WANT") })
+    {
+        if (val == 0) continue;
+        var needle = System.Text.Encoding.Unicode.GetBytes(val.ToString());
+        for (var o = 0; o + needle.Length <= got; o += 2)
+            if (body.AsSpan(o, needle.Length).SequenceEqual(needle))
+                Console.WriteLine($"  panel +0x{o:X3} utf16 \"{val}\"  <{tag}");
+    }
+    // one pointer-hop: deref each panel pointer, scan its first 0x300 for the int values + utf16.
+    Console.WriteLine("=== one hop (pointer fields → object) ===");
+    var inner = new byte[0x300];
+    for (var o = 0; o + 8 <= got; o += 8)
+    {
+        var p = (nint)BitConverter.ToInt64(body, o);
+        if ((ulong)p is < 0x10000 or > 0x7FFFFFFFFFFF) continue;
+        var n = reader.TryReadBytes(p, inner); if (n < 8) continue;
+        for (var io = 0; io + 4 <= n; io += 4)
+        {
+            var v = BitConverter.ToInt32(inner, io);
+            if ((have != 0 && v == have) || (want != 0 && v == want))
+                Console.WriteLine($"  panel+0x{o:X3} -> 0x{p:X} +0x{io:X3} int32 = {v}{(v == have ? "  <HAVE" : "  <WANT")}");
+        }
+        foreach (var (val, tag) in new[] { (have, "HAVE"), (want, "WANT") })
+        {
+            if (val == 0) continue;
+            var needle = System.Text.Encoding.Unicode.GetBytes(val.ToString());
+            for (var io = 0; io + needle.Length <= n; io += 2)
+                if (inner.AsSpan(io, needle.Length).SequenceEqual(needle))
+                { Console.WriteLine($"  panel+0x{o:X3} -> 0x{p:X} +0x{io:X3} utf16 \"{val}\"  <{tag}"); break; }
+        }
+    }
+
+    // The count input is a UI CHILD element of the panel; its value is the element's Text. BFS the panel
+    // subtree for a text element whose text == the value, and print its child-index path from the panel so
+    // we can resolve it structurally at runtime (e.g. panel.Children[i]…Text → parse int = the quantity).
+    Console.WriteLine("=== panel subtree text elements == have/want value (the input field) ===");
+    var tq = new Queue<(nint el, string path)>(); tq.Enqueue((panel, ""));
+    var tv = new HashSet<nint>();
+    while (tq.Count > 0 && tv.Count < 20000)
+    {
+        var (el, path) = tq.Dequeue();
+        if (el == 0 || !tv.Add(el)) continue;
+        var t = ReadStdWString(reader, el + Poe2.UiElement.Text).Trim();
+        if ((have != 0 && t == have.ToString()) || (want != 0 && t == want.ToString()))
+            Console.WriteLine($"  {(t == have.ToString() ? "HAVE" : "WANT")}  element 0x{el:X}  path [{path.TrimStart(',')}]  text=\"{t}\"");
+        var f = SafePtr(reader, el + Poe2.UiElement.Children);
+        if (f != 0 && reader.TryReadStruct<nint>(el + Poe2.UiElement.ChildrenEnd, out var l))
+        { var n = ((long)l - (long)f) / 8; if (n is > 0 and <= 4096) for (long i = 0; i < n; i++) tq.Enqueue((SafePtr(reader, f + (nint)(i * 8)), path + "," + i)); }
+    }
+    return 0;
+}
+
+// TARGETED panel dump: find the "Market Ratio" text element (a CHILD of the panel, per PoE1 RatioElementPtr),
+// walk UP its ancestor chain, and for each ancestor dump EVERY {begin,end,cap} vector pointing to a
+// stride-0x10 array — with entries decoded, NO ratio filter. The real CurrencyExchangePanel is in the chain;
+// scoping to ~8 ancestors avoids the memory-wide junk flood. Eyeball for the two vectors whose entries match
+// the displayed ladder. Exchange must be OPEN.
+static int RunExchangePanel3(ProcessHandle process, MemoryReader reader, string needle)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
+    if (uiRoot == 0) { Console.Error.WriteLine("no UiRoot."); return 1; }
+
+    // BFS for the visible text element whose first line contains the needle.
+    nint el = 0; var q = new Queue<nint>(); q.Enqueue(uiRoot); var seen = new HashSet<nint>();
+    while (q.Count > 0 && seen.Count < 200000 && el == 0)
+    {
+        var e = q.Dequeue(); if (e == 0 || !seen.Add(e) || SafePtr(reader, e + Poe2.UiElement.Self) != e) continue;
+        var f = SafePtr(reader, e + Poe2.UiElement.Children);
+        if (f != 0 && reader.TryReadStruct<nint>(e + Poe2.UiElement.ChildrenEnd, out var l))
+        { var n = ((long)l - (long)f) / 8; if (n is > 0 and <= 16384) for (long k = 0; k < n; k++) q.Enqueue(SafePtr(reader, f + (nint)(k * 8))); }
+        var t = ReadStdWString(reader, e + Poe2.UiElement.Text);
+        if (t.Contains(needle, StringComparison.OrdinalIgnoreCase)) el = e;
+    }
+    if (el == 0) { Console.WriteLine($"text \"{needle}\" not found — is the exchange open?"); return 0; }
+    Console.WriteLine($"found \"{needle}\" element 0x{el:X}; walking ancestors for inline stock vectors:\n");
+
+    var body = new byte[0x1A00];
+    var cur = el;
+    for (var lvl = 0; lvl < 9 && cur != 0; lvl++)
+    {
+        long childN = 0; var cf = SafePtr(reader, cur + Poe2.UiElement.Children);
+        if (cf != 0 && reader.TryReadStruct<nint>(cur + Poe2.UiElement.ChildrenEnd, out var cl)) childN = ((long)cl - (long)cf) / 8;
+        // flags (visible bit masked, like runeforge fingerprints) + index within parent → the resolver path.
+        reader.TryReadStruct<uint>(cur + Poe2.UiElement.Flags, out var flg);
+        var par = SafePtr(reader, cur + Poe2.UiElement.Parent); var idx = -1;
+        if (par != 0) { var pf = SafePtr(reader, par + Poe2.UiElement.Children); if (pf != 0 && reader.TryReadStruct<nint>(par + Poe2.UiElement.ChildrenEnd, out var pl)) { var pn = ((long)pl - (long)pf) / 8; for (long i = 0; i < pn && i < 8192; i++) if (SafePtr(reader, pf + (nint)(i * 8)) == cur) { idx = (int)i; break; } } }
+        Console.WriteLine($"lvl{lvl} element 0x{cur:X} childIdx={idx} children={childN} flags=0x{flg:X8} (masked 0x{flg & ~(1u << Poe2.UiElement.FlagVisibleBit):X8})");
+        var got = reader.TryReadBytes(cur, body);
+        for (var off = 0x100; off + 24 <= got; off += 8)
+        {
+            var begin = (nint)BitConverter.ToInt64(body, off);
+            var end = (nint)BitConverter.ToInt64(body, off + 8);
+            if ((ulong)begin is < 0x10000 or > 0x7FFFFFFFFFFF) continue;
+            var bytes = (long)end - (long)begin;
+            if (bytes < 0x20 || bytes > 0x80000 || bytes % 0x10 != 0) continue;
+            var count = (int)(bytes / 0x10);
+            if (count is < 2 or > 50000) continue;
+            var n = Math.Min(count, 6); var rec = new byte[n * 0x10];
+            if (reader.TryReadBytes(begin, rec) != rec.Length) continue;
+            // Dump each 0x10 entry decoded multiple ways so the field layout is unambiguous:
+            // u16@0, u16@2, u16@4, u16@6, i32@8, i32@C (PoE1 was Get:u16@0, Give:u16@2, ListedCount:i32@8).
+            var sb = new System.Text.StringBuilder(); var plausible = 0;
+            for (var k = 0; k < n; k++)
+            {
+                int o2 = k * 0x10;
+                ushort u0 = BitConverter.ToUInt16(rec, o2), u2 = BitConverter.ToUInt16(rec, o2 + 2), u4 = BitConverter.ToUInt16(rec, o2 + 4), u6 = BitConverter.ToUInt16(rec, o2 + 6);
+                int i8 = BitConverter.ToInt32(rec, o2 + 8), iC = BitConverter.ToInt32(rec, o2 + 0xC);
+                if (i8 is > 0 and < 100_000_000) plausible++;
+                sb.Append($"\n      [{k}] u16: {u0},{u2},{u4},{u6}  i32@8={i8} i32@C={iC}  (ratio u0/u2={(u2 != 0 ? u0 / (double)u2 : 0):0.##})");
+            }
+            if (plausible >= n - 1)
+                Console.WriteLine($"   +0x{off:X3} VEC count={count} begin=0x{begin:X}{sb}");
+        }
+        cur = SafePtr(reader, cur + Poe2.UiElement.Parent);   // walk up to the parent
+        if (cur == uiRoot) { Console.WriteLine("lvl(root) reached UiRoot."); break; }
+    }
+    Console.WriteLine("\n(The panel = the ancestor showing two vectors whose entries match the live ladder.)");
+    return 0;
+}
+
+// CROSS-REF from PoE1: the panel element holds TWO consecutive inline std::vector<stock> headers (PoE1:
+// Stock1@+0x430 wanted, Stock2@+0x448 offered). So find the PoE2 UI element whose struct contains ≥2
+// {begin,end,cap} vectors each pointing to a stride-0x10 array of {Give:i32,Get:i32,Count:i32} entries —
+// that element is the CurrencyExchangePanel, and those vector OFFSETS are the stable anchor (read live).
+// Exchange must be OPEN with a pair selected.
+static int RunExchangeVec2(ProcessHandle process, MemoryReader reader, float targetRatio)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("no chain (in game?)."); return 1; }
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
+    if (uiRoot == 0) { Console.Error.WriteLine("no UiRoot."); return 1; }
+    if (targetRatio > 0) Console.WriteLine($"ratio filter: entries must cohere near {targetRatio:0.###} or inverse {1 / targetRatio:0.###}.");
+
+    // Validate a {begin,end,cap} at body[off] as a REAL stock vector: entries are {Give,Get,Count} int32 with
+    // COHERENT ratios (a true market clusters), and — if a displayed ratio is given — matching it (or inverse).
+    // Coherence + ratio-match reject the junk vectors (atlas/counter/incoherent) that plagued earlier scans.
+    (bool ok, int count, string sample) StockVec(byte[] body, int off, int got)
+    {
+        if (off + 24 > got) return (false, 0, "");
+        var begin = (nint)BitConverter.ToInt64(body, off);
+        var end = (nint)BitConverter.ToInt64(body, off + 8);
+        var cap = (nint)BitConverter.ToInt64(body, off + 16);
+        if ((ulong)begin is < 0x10000 or > 0x7FFFFFFFFFFF) return (false, 0, "");
+        var bytes = (long)end - (long)begin;
+        if (bytes < 0x30 || bytes > 0x80000 || bytes % 0x10 != 0) return (false, 0, "");
+        if ((long)cap < (long)end || (long)cap - (long)begin > 0x100000) return (false, 0, "");
+        var count = (int)(bytes / 0x10);
+        if (count is < 3 or > 50000) return (false, 0, "");
+        var n = Math.Min(count, 8);
+        var rec = new byte[n * 0x10];
+        if (reader.TryReadBytes(begin, rec) != rec.Length) return (false, 0, "");
+        var okN = 0; double rmin = double.MaxValue, rmax = 0; var sb = new System.Text.StringBuilder();
+        for (var k = 0; k < n; k++)
+        {
+            int a = BitConverter.ToInt32(rec, k * 0x10), b = BitConverter.ToInt32(rec, k * 0x10 + 4), c = BitConverter.ToInt32(rec, k * 0x10 + 8);
+            if (a > 0 && b > 0 && c is > 0 and < 10_000_000 && (b / (double)a) is > 0.0005 and < 2000)
+            { okN++; var r = b / (double)a; rmin = Math.Min(rmin, r); rmax = Math.Max(rmax, r); }
+            if (k < 5) sb.Append($"{{G={a} Gt={b} C={c} r={(a != 0 ? b / (double)a : 0):0.###}}} ");
+        }
+        if (okN < n - 1 || rmax <= 0) return (false, 0, "");
+        if (rmax / rmin > 4) return (false, 0, "");                 // a real bucket-ladder coheres within ~4x
+        if (targetRatio > 0)
+        {
+            var med = (rmin + rmax) / 2;
+            var near = Math.Abs(med - targetRatio) / targetRatio < 0.4 || Math.Abs(med - 1 / targetRatio) * targetRatio < 0.4;
+            if (!near) return (false, 0, "");
+        }
+        return (true, count, sb.ToString());
+    }
+
+    var q = new Queue<nint>(); q.Enqueue(uiRoot); var seen = new HashSet<nint>();
+    var body = new byte[0x1A00];
+    var hits = new List<(nint el, int vecs, string detail)>();
+    while (q.Count > 0 && seen.Count < 200000)
+    {
+        var el = q.Dequeue();
+        if (el == 0 || !seen.Add(el) || SafePtr(reader, el + Poe2.UiElement.Self) != el) continue;
+        var first = SafePtr(reader, el + Poe2.UiElement.Children);
+        if (first != 0 && reader.TryReadStruct<nint>(el + Poe2.UiElement.ChildrenEnd, out var last))
+        { var nn = ((long)last - (long)first) / 8; if (nn is > 0 and <= 16384) for (long k = 0; k < nn; k++) q.Enqueue(SafePtr(reader, first + (nint)(k * 8))); }
+
+        var got = reader.TryReadBytes(el, body); if (got < 0x140) continue;
+        var vecs = new List<(int off, int count, string sample)>();
+        for (var off = 0x100; off + 24 <= got; off += 8)   // skip core UiElement fields (vtable/children/etc.)
+        {
+            var (ok, count, sample) = StockVec(body, off, got);
+            if (ok) vecs.Add((off, count, sample));
+        }
+        if (vecs.Count >= 1)
+        {
+            var detail = string.Join("\n", vecs.Select(v => $"    +0x{v.off:X3} count={v.count}  {v.sample}"));
+            hits.Add((el, vecs.Count, detail));
+        }
+    }
+    // Rank: elements with the MOST stock vectors first (the panel has 2 adjacent ones).
+    foreach (var (el, vecs, detail) in hits.OrderByDescending(h => h.vecs).Take(12))
+    {
+        var t = ReadStdWString(reader, el + Poe2.UiElement.Text);
+        Console.WriteLine($"*** element 0x{el:X} ({vecs} stock vector{(vecs > 1 ? "s" : "")}){(t.Length > 0 ? $" text=\"{t.Split('\n')[0]}\"" : "")} ***\n{detail}");
+    }
+    if (hits.Count == 0) Console.WriteLine("no element holds a stock vector — is the PoE2 exchange OPEN with a pair selected? (the panel builds the lists only while a pair is loaded).");
+    else Console.WriteLine($"\n{hits.Count} element(s) with ≥1 stock vector; the one with 2 = the CurrencyExchangePanel (vector offsets = the anchor).");
+    return 0;
+}
+
+// TRACE: find the REAL order book (ratio-clustered + VARYING small per-order Count — not the all-identical
+// static-junk arrays, not cumulative graph data), then in the SAME run scan for any pointer into it and
+// backtrace to a UiElement (the stable anchor). Identifies the book generically (any pair) by shape.
+static int RunExchangeTrace(ProcessHandle process, MemoryReader reader, float targetRatio)
+{
+    if (targetRatio <= 0) { Console.Error.WriteLine("pass --ratio-milli <displayed ratio ×1000> (e.g. 2990 for 2.99) — needed to tell the book from sequential/static junk."); return 1; }
+    Console.WriteLine($"target ratio ≈ {targetRatio:0.###} (or inverse {1 / targetRatio:0.###}).");
+    // A real book: ≥6 stride-0x10 records {Give>0,Get>0,Count in [1,200000]} whose ratio (or inverse) sits
+    // in a BAND around the displayed top ratio [R*0.2 .. R*1.3] — the book spreads from the top ratio down,
+    // so clustering is wrong; the band itself is the filter (a ratio ~50 is essentially unique in memory).
+    // Require ≥4 distinct Get AND ≥3 distinct Count to reject static/identical-row arrays.
+    double loB = targetRatio * 0.2, hiB = targetRatio * 1.3;
+    (bool ok, int run) BookAt(byte[] buf, int i, int got)
+    {
+        int run = 0; var gets = new HashSet<int>(); var counts = new HashSet<int>();
+        for (var k = 0; i + (k + 1) * 0x10 <= got; k++)
+        {
+            int a = BitConverter.ToInt32(buf, i + k * 0x10), b = BitConverter.ToInt32(buf, i + k * 0x10 + 4), c = BitConverter.ToInt32(buf, i + k * 0x10 + 8);
+            if (a <= 0 || b <= 0 || c is <= 0 or > 200000) break;
+            double r = b / (double)a, ri = a / (double)b;
+            if (!((r >= loB && r <= hiB) || (ri >= loB && ri <= hiB))) break;
+            run++; gets.Add(b); counts.Add(c);
+        }
+        return (run >= 6 && gets.Count >= 4 && counts.Count >= 3, run);
+    }
+
+    var cands = new List<(nint addr, int run)>();
+    var buf = new byte[1 << 20];
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: true, excludeImage: true))
+    {
+        for (long o = 0; o < rs; o += buf.Length - 0x100)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 0x80 <= got; i += 4)
+            {
+                var (ok, run) = BookAt(buf, i, got);
+                if (ok) cands.Add((rb + (nint)(o + i), run));
+                if (run >= 2) i += run * 0x10 - 4;   // ALWAYS skip past a detected run (matched or not) → O(n), no re-scan
+            }
+            if (cands.Count > 2000) break;
+        }
+        if (cands.Count > 2000) break;
+    }
+    if (cands.Count == 0) { Console.WriteLine("real order book not found — exchange open with a loaded pair?"); return 0; }
+    Console.WriteLine($"{cands.Count} book-shaped arrays found.");
+    // Walk each candidate back to its true vector start; build a set of ALL current book starts. The owning
+    // vector's `begin` field equals one of these RIGHT NOW (header updated in place), so scanning for a qword
+    // in this set catches the header regardless of which per-tick array is live — no stale-address race.
+    var starts = new Dictionary<long, nint>();   // trueStart -> the candidate addr (for display)
+    foreach (var (addr, _) in cands)
+    {
+        var s = addr;
+        while (reader.TryReadStruct<int>(s - 0x10, out var a) && reader.TryReadStruct<int>(s - 0x10 + 4, out var b)
+               && reader.TryReadStruct<int>(s - 0x10 + 8, out var c) && a > 0 && b > 0 && c is > 0 and <= 200000 && (b / (double)a) is > 0.001 and < 1000)
+            s -= 0x10;
+        starts[(long)s] = addr;
+    }
+    var best = cands.OrderByDescending(c => c.run).First();
+    Console.WriteLine($"{starts.Count} distinct book starts; longest run {best.run} @0x{best.addr:X}. Sample orders:");
+    for (var k = 0; k < 6; k++)
+    { reader.TryReadStruct<int>(best.addr + k * 0x10, out var a); reader.TryReadStruct<int>(best.addr + k * 0x10 + 4, out var b); reader.TryReadStruct<int>(best.addr + k * 0x10 + 8, out var c);
+      Console.WriteLine($"   [{k}] Give={a} Get={b} Count={c} (ratio {(a != 0 ? b / (double)a : 0):0.###})"); }
+
+    // Scan ALL regions for a qword == any current book start (a vector `begin` field = the owning header).
+    var refs = new List<(nint at, long tgt)>();
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: false, excludeImage: false))
+    {
+        for (long o = 0; o < rs; o += buf.Length - 8)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 8 <= got; i += 8) { var v = BitConverter.ToInt64(buf, i); if (starts.ContainsKey(v)) refs.Add((rb + (nint)(o + i), v)); }
+            if (refs.Count > 800) break;
+        }
+        if (refs.Count > 800) break;
+    }
+    Console.WriteLine($"\n{refs.Count} pointer(s) to a current book start (candidate vector headers):");
+    foreach (var (at, tgt) in refs.Take(25))
+    {
+        reader.TryReadStruct<nint>(at + 8, out var end);
+        var cnt = (long)end > tgt && ((long)end - tgt) % 0x10 == 0 ? ((long)end - tgt) / 0x10 : -1;
+        var vec = cnt is >= 0 and < 100000 ? $"VECTOR count={cnt}" : "";
+        Console.WriteLine($"  header @0x{at:X} -> book 0x{tgt:X}  end=0x{end:X} {vec}");
+        for (var back = 0; back <= 0xE00; back += 8)
+        { var cand = at - back; if (SafePtr(reader, cand + Poe2.UiElement.Self) == cand && cand != 0) { Console.WriteLine($"      ↑ owning UiElement 0x{cand:X}; vector @ element+0x{back:X}"); break; } }
+    }
+    if (refs.Count == 0) Console.WriteLine("  NONE — no stable pointer to any live book. The lists are transient/computed with no vector handle → in-process scanning can't anchor them; a Cheat Engine pointer-scan (base→offset chain) is the right tool.");
+    return 0;
+}
+
+// ANCHOR DISCOVERY (race-free): the stable handle to the order book is the UI element that owns the
+// OfferedItemStock/WantedItemStock vectors (MarketWizard reads them off CurrencyExchangePanel). The data
+// arrays churn, but the vector HEADER {begin,end,cap} lives at a fixed offset inside the stable element and
+// is updated in place. So: BFS every UI element, read its struct, and find a {begin,end,cap} field whose
+// data is an array of order triples (Give/Get/Count). Validating header→data in one read avoids the
+// reallocation race. Reports the owning element (addr + text + child count) + offset + decoded orders, so
+// the overlay can resolve that element by fingerprint and read the book live. Exchange must be OPEN.
+static int RunExchangeVec(ProcessHandle process, MemoryReader reader, float expectRatio)
+{
+    var (_, igs, _, _) = ResolveChain(process, reader);
+    if (igs == 0) { Console.Error.WriteLine("Could not resolve chain (in game?)."); return 1; }
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
+    if (uiRoot == 0) { Console.Error.WriteLine("no UiRoot."); return 1; }
+
+    // 1) BFS every UI element (Self-validated), keep addr + first-line text + child count.
+    var els = new List<(nint el, string text, long children)>();
+    var q = new Queue<nint>(); q.Enqueue(uiRoot); var seen = new HashSet<nint>();
+    while (q.Count > 0 && seen.Count < 200000)
+    {
+        var el = q.Dequeue();
+        if (el == 0 || !seen.Add(el) || SafePtr(reader, el + Poe2.UiElement.Self) != el) continue;
+        var first = SafePtr(reader, el + Poe2.UiElement.Children); long n = 0;
+        if (first != 0 && reader.TryReadStruct<nint>(el + Poe2.UiElement.ChildrenEnd, out var last))
+        { n = ((long)last - (long)first) / 8; if (n is > 0 and <= 16384) for (long k = 0; k < n; k++) q.Enqueue(SafePtr(reader, first + (nint)(k * 8))); }
+        var t = ReadStdWString(reader, el + Poe2.UiElement.Text);
+        els.Add((el, t.Length > 0 ? t.Split('\n')[0] : "", n));
+    }
+    Console.WriteLine($"BFS {els.Count} UI elements. Scanning their structs for order-triple vectors…\n");
+
+    // A real order triple: small order sizes (player quantities, not bit-packed), positive count, sane ratio.
+    bool TripleOk(int a, int b, int c) => a is > 0 and < 100_000 && b is > 0 and < 100_000 && c is > 0 and < 10_000_000
+        && (b / (double)a) is > 0.02 and < 50;
+
+    var hits = 0;
+    var body = new byte[0x1200];
+    foreach (var (el, text, children) in els)
+    {
+        var got = reader.TryReadBytes(el, body); if (got < 0x40) continue;
+        for (var off = 0; off + 24 <= got; off += 8)
+        {
+            var begin = (nint)BitConverter.ToInt64(body, off);
+            var end = (nint)BitConverter.ToInt64(body, off + 8);
+            var cap = (nint)BitConverter.ToInt64(body, off + 16);
+            if ((ulong)begin is < 0x10000 or > 0x7FFFFFFFFFFF) continue;
+            var bytes = (long)end - (long)begin;
+            if (bytes < 0x50 || bytes > 0x100000 || bytes % 0x10 != 0) continue;   // ≥5 entries, 0x10 stride
+            if ((long)cap < (long)end || (long)cap - (long)begin > 0x200000) continue;
+            var count = (int)(bytes / 0x10);
+            if (count is < 5 or > 20000) continue;
+            // deref + validate first ~6 records as order triples
+            var rec = new byte[Math.Min(count, 6) * 0x10];
+            if (reader.TryReadBytes(begin, rec) != rec.Length) continue;
+            var ok = 0; double rmin = double.MaxValue, rmax = 0;
+            for (var k = 0; k < rec.Length / 0x10; k++)
+            {
+                int a = BitConverter.ToInt32(rec, k * 0x10), b = BitConverter.ToInt32(rec, k * 0x10 + 4), c = BitConverter.ToInt32(rec, k * 0x10 + 8);
+                if (!TripleOk(a, b, c)) continue;
+                ok++; var r = b / (double)a; rmin = Math.Min(rmin, r); rmax = Math.Max(rmax, r);
+            }
+            if (ok < Math.Min(count, 6) - 1) continue;   // allow 1 odd record (e.g. the "rest" {0,0,n})
+            if (rmax / rmin > 8) continue;               // a real market clusters; reject scattered junk
+            // If the live displayed ratio was supplied, require the vector's ratios to cluster near it (or
+            // its inverse) — this rejects atlas-node / layout vectors that merely look order-shaped.
+            if (expectRatio > 0)
+            {
+                var med = (rmin + rmax) / 2;
+                var near = Math.Abs(med - expectRatio) / expectRatio < 0.35 || Math.Abs(med - 1 / expectRatio) * expectRatio < 0.35;
+                if (!near) continue;
+            }
+            hits++;
+            Console.WriteLine($"*** element 0x{el:X} (\"{text}\", children={children}) + 0x{off:X3} → VECTOR count={count} begin=0x{begin:X} ***");
+            var show = new byte[Math.Min(count, 10) * 0x10];
+            reader.TryReadBytes(begin, show);
+            for (var k = 0; k < show.Length / 0x10; k++)
+            {
+                int gi = BitConverter.ToInt32(show, k * 0x10), ge = BitConverter.ToInt32(show, k * 0x10 + 4),
+                    cn = BitConverter.ToInt32(show, k * 0x10 + 8), fl = BitConverter.ToInt32(show, k * 0x10 + 0xC);
+                Console.WriteLine($"     [{k,2}] Give={gi,-8} Get={ge,-8} Count={cn,-10} flag={fl}  (Get/Give={(gi != 0 ? ge / (double)gi : 0):0.###})");
+            }
+        }
+    }
+    if (hits == 0) Console.WriteLine("no element holds an order-triple vector — is the exchange OPEN with a loaded book? (the panel may build the lists only while a pair is selected).");
+    else Console.WriteLine($"\n{hits} candidate stock vector(s). The owning element(s) = the stable anchor (resolve by fingerprint, read header live).");
+    return 0;
+}
+
+// CAPSTONE: find the order array AND, in the SAME run (no reallocation drift), the std::vector header that
+// owns it (a qword == array base) → trace to the containing object. The header lives in a STABLE struct
+// (the CurrencyExchangePanel element / its model); only the array it points to churns. Once we know the
+// header's location relative to a UiElement, the overlay reads the book live via that anchor — churn-proof.
+static int RunExchangeAnchor(ProcessHandle process, MemoryReader reader, float lo, float hi)
+{
+    bool RatioOk(int a, int b) => a is > 0 and < 100000 && b is > 0 and < 100000 && ((b / (float)a >= lo && b / (float)a <= hi) || (a / (float)b >= lo && a / (float)b <= hi));
+    // 1) locate a REAL order array (small integer Give/Get, ≥5 consecutive in-band records, stride 0x10).
+    nint arr = 0; int arrRun = 0;
+    var buf = new byte[1 << 20];
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: true, excludeImage: true))
+    {
+        for (long o = 0; o < rs && arr == 0; o += buf.Length - 0x100)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 0x10 * 5 <= got; i += 4)
+            {
+                var run = 0;
+                for (var k = 0; i + (k + 1) * 0x10 <= got; k++)
+                {
+                    var a = BitConverter.ToInt32(buf, i + k * 0x10);
+                    var b = BitConverter.ToInt32(buf, i + k * 0x10 + 4);
+                    var c = BitConverter.ToInt32(buf, i + k * 0x10 + 8);
+                    if (a < 1000 && b < 1000 && RatioOk(a, b) && c is > 0 and < 10_000_000) run++; else break;
+                }
+                if (run >= 5) { arr = rb + (nint)(o + i); arrRun = run; break; }
+            }
+        }
+        if (arr != 0) break;
+    }
+    if (arr == 0) { Console.WriteLine("no small-int order array found (open the exchange on a thin pair + hover)."); return 0; }
+    // Walk BACKWARD in 0x10 steps to the true array start (records with small positive Give/Get, any ratio).
+    var start = arr;
+    while (true)
+    {
+        var prev = start - 0x10;
+        if (!reader.TryReadStruct<int>(prev, out var a) || !reader.TryReadStruct<int>(prev + 4, out var b) || !reader.TryReadStruct<int>(prev + 8, out var c)) break;
+        if (a is > 0 and < 100000 && b is > 0 and < 100000 && c is >= 0 and < 10_000_000) start = prev; else break;
+    }
+    Console.WriteLine($"order array first-in-band @0x{arr:X}; true start @0x{start:X} (stride 0x10).");
+
+    // 2) SAME run: scan ALL regions for a qword pointing INTO the array [start, arr+run*0x10] — the vector's
+    // `begin` (= start) plus any interior refs. For each, test {begin,end,cap} and backtrace to a UiElement.
+    var rangeLo = (long)start; var rangeHi = (long)arr + arrRun * 0x10 + 0x40;
+    var headers = new List<(nint at, nint tgt)>();
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: false, excludeImage: false))
+    {
+        for (long o = 0; o < rs; o += buf.Length - 8)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 8 <= got; i += 8) { var v = BitConverter.ToInt64(buf, i); if (v >= rangeLo && v <= rangeHi) headers.Add((rb + (nint)(o + i), (nint)v)); }
+            if (headers.Count > 400) break;
+        }
+        if (headers.Count > 400) break;
+    }
+    Console.WriteLine($"{headers.Count} pointer(s) into the array range:\n");
+    foreach (var (h, tgt) in headers.Where(x => x.tgt == start).Concat(headers.Where(x => x.tgt != start)).Take(24))
+    {
+        reader.TryReadStruct<nint>(h + 8, out var end);
+        reader.TryReadStruct<nint>(h + 16, out var cap);
+        var bytes = (long)end - (long)tgt;
+        var cnt = bytes > 0 && bytes % 0x10 == 0 ? bytes / 0x10 : -1;
+        var capOk = (long)cap >= (long)end && (long)cap - (long)tgt < 0x100000;
+        var verdict = cnt is >= 0 and < 100000 && capOk ? $"VECTOR begin{(tgt == start ? "=start" : $"=start+0x{(long)tgt - (long)start:X}")} count={cnt}" : "interior ref";
+        Console.WriteLine($"  ptr @0x{h:X} -> 0x{tgt:X}  end=0x{end:X} cap=0x{cap:X}  {verdict}");
+        if (verdict.StartsWith("VECTOR"))
+            for (var back = 0; back <= 0xC00; back += 8)
+            {
+                var cand = h - back;
+                if (SafePtr(reader, cand + Poe2.UiElement.Self) == cand && cand != 0)
+                { Console.WriteLine($"      ↑ owning UiElement 0x{cand:X}; stock vector @ element+0x{back:X}"); break; }
+            }
+    }
+    if (headers.Count == 0) Console.WriteLine("  (no pointer into the array — reallocated mid-scan; re-run on the thin pair.)");
+    return 0;
+}
+
+// ORDER-BOOK structure finder (informed by PoE1 ExileApi MarketWizard): the book is a vector of
+// {Give:int, Get:int, ListedCount:int} records; ratio = Get/Give (or Give/Get) is DERIVED, not stored.
+// So we don't chase float ratios — we scan for a contiguous ARRAY where ≥minrun consecutive records have
+// an INTEGER Give/Get ratio in [lo,hi] (our pair's band) and a positive count. An array of 4+ such records
+// is almost only the order book. Tries common strides; reports each run's base/stride/count + a dump.
+static int RunExchangeOrders(ProcessHandle process, MemoryReader reader, float lo, float hi, int minRun)
+{
+    Console.WriteLine($"order-scan: runs of ≥{minRun} records with integer Give/Get ratio in [{lo},{hi}] + positive count.");
+    bool RatioOk(int a, int b) => a > 0 && b > 0 && ((b / (float)a >= lo && b / (float)a <= hi) || (a / (float)b >= lo && a / (float)b <= hi));
+    var strides = new[] { 12, 16, 20, 24 };
+    var found = new List<(nint addr, int stride, int run)>();
+    var buf = new byte[1 << 20];
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: true, excludeImage: true))
+    {
+        for (long o = 0; o < rs; o += buf.Length - 0x100)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            foreach (var stride in strides)
+            {
+                for (var i = 0; i + stride * minRun <= got; i += 4)
+                {
+                    // count consecutive records from i with a valid Give/Get ratio (ints at rec+0, rec+4)
+                    var run = 0;
+                    for (var k = 0; i + (k + 1) * stride <= got; k++)
+                    {
+                        var a = BitConverter.ToInt32(buf, i + k * stride);
+                        var b = BitConverter.ToInt32(buf, i + k * stride + 4);
+                        var c = BitConverter.ToInt32(buf, i + k * stride + 8);
+                        if (RatioOk(a, b) && c is > 0 and < 100_000_000) run++; else break;
+                    }
+                    if (run >= minRun) { found.Add((rb + (nint)(o + i), stride, run)); i += run * stride - 4; }
+                }
+            }
+            if (found.Count > 400) break;
+        }
+        if (found.Count > 400) break;
+    }
+    // Dedup overlapping hits, rank by run length.
+    found.Sort((x, y) => x.addr.CompareTo(y.addr));
+    var dedup = new List<(nint addr, int stride, int run)>();
+    foreach (var f in found) if (dedup.Count == 0 || (long)f.addr - (long)dedup[^1].addr > dedup[^1].stride * dedup[^1].run) dedup.Add(f);
+    Console.WriteLine($"\n{dedup.Count} candidate order arrays (≥{minRun} consecutive ratio-band records):");
+    foreach (var (addr, stride, run) in dedup.OrderByDescending(f => f.run).Take(10))
+    {
+        Console.WriteLine($"\n*** @0x{addr:X} stride=0x{stride:X} run={run} ***");
+        var n = Math.Min(run, 14);
+        for (var k = 0; k < n; k++)
+        {
+            var rec = addr + (nint)(k * stride);
+            reader.TryReadStruct<int>(rec, out var a);
+            reader.TryReadStruct<int>(rec + 4, out var b);
+            reader.TryReadStruct<int>(rec + 8, out var c);
+            var r1 = a != 0 ? b / (float)a : 0; var r2 = b != 0 ? a / (float)b : 0;
+            Console.WriteLine($"   [{k,2}] Give={a,-10} Get={b,-10} Count={c,-10} (Get/Give={r1:0.###}  Give/Get={r2:0.###})");
+        }
+    }
+    if (dedup.Count == 0) Console.WriteLine("none — widen band (--lo-milli/--hi-milli), lower --minrun, or the entry layout differs (try after re-confirming the live ladder).");
+    return 0;
+}
+
+// PAIR-match scan: the decisive order-book finder. Each row is "stockInt:ratioFloat". We scan for each
+// stock int32, and only KEEP a hit if its paired ratio float sits within ±window bytes — that co-location
+// is what distinguishes a real order entry from the thousands of stray ratio/stock values in memory.
+// Then we dump the matched region float-aware so the entry struct (ratio, stock, currency ids, stride)
+// becomes legible. Usage: --exchange-pairs "7281:2.97,39:2.97,20:2.90,85:2.87,120:2.80,11:2.73"
+static int RunExchangePairs(ProcessHandle process, MemoryReader reader, string pairsArg)
+{
+    var pairs = pairsArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(p => p.Split(':'))
+        .Where(a => a.Length == 2 && int.TryParse(a[0], out _) && float.TryParse(a[1], out _))
+        .Select(a => (stock: int.Parse(a[0]), ratio: float.Parse(a[1]))).ToArray();
+    if (pairs.Length == 0) { Console.Error.WriteLine("bad --exchange-pairs (want \"stock:ratio,stock:ratio,...\")."); return 1; }
+    Console.WriteLine($"pair-scan: {string.Join("  ", pairs.Select(p => $"{p.stock}:{p.ratio}"))}");
+    const int Win = 0x80;     // how far from the stock int the paired ratio float may sit
+    var stockToRatio = pairs.ToDictionary(p => p.stock, p => p.ratio);
+    var stockSet = pairs.Select(p => p.stock).ToHashSet();
+
+    var matches = new List<(nint addr, int stock, float ratio, int ratioDelta)>();
+    var buf = new byte[(1 << 20) + Win * 2];
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: true, excludeImage: true))
+    {
+        for (long o = 0; o < rs; o += (1 << 20))
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 4 <= got; i += 4)
+            {
+                var iv = BitConverter.ToInt32(buf, i);
+                if (!stockSet.Contains(iv)) continue;
+                var want2 = stockToRatio[iv];
+                // search ±Win for the paired ratio float
+                for (var d = -Win; d <= Win; d += 4)
+                {
+                    var j = i + d; if (j < 0 || j + 4 > got) continue;
+                    var fv = BitConverter.ToSingle(buf, j);
+                    if (Math.Abs(fv - want2) < 0.015f) { matches.Add((rb + (nint)(o + i), iv, fv, d)); break; }
+                }
+            }
+        }
+    }
+    Console.WriteLine($"\n{matches.Count} co-located (stock,ratio) matches:");
+    foreach (var m in matches.OrderBy(m => m.addr))
+        Console.WriteLine($"  0x{m.addr:X} stock={m.stock} ratio={m.ratio:0.####} (ratio @ {(m.ratioDelta < 0 ? "-" : "+")}0x{Math.Abs(m.ratioDelta):X})");
+    if (matches.Count == 0) { Console.WriteLine("no co-located pairs — the book may have shifted, or stock/ratio aren't stored adjacently. Re-read the live ladder + retry."); return 0; }
+
+    // Group matches that fall within 0x2000 of each other = the order-book table. Dump the table.
+    matches.Sort((a, b) => a.addr.CompareTo(b.addr));
+    var groups = new List<List<(nint addr, int stock, float ratio, int ratioDelta)>>();
+    foreach (var m in matches)
+    {
+        if (groups.Count > 0 && (long)m.addr - (long)groups[^1][^1].addr <= 0x2000) groups[^1].Add(m);
+        else groups.Add(new() { m });
+    }
+    foreach (var g in groups.OrderByDescending(g => g.Count).Take(3))
+    {
+        var addrs = g.Select(m => (long)m.addr).ToList();
+        var strides = Enumerable.Range(1, addrs.Count - 1).Select(i => addrs[i] - addrs[i - 1]).ToList();
+        Console.WriteLine($"\n*** order table @0x{g[0].addr:X} ({g.Count} entries) strides=[{string.Join(",", strides.Select(s => $"0x{s:X}"))}] ***");
+        Console.WriteLine("--- entry dump (first matched entry, float-aware, -0x10..+0x40) ---");
+        RunDumpFloat(reader, g[0].addr - 0x10, 0x50);
+    }
+    return 0;
+}
+
+// SCAN mode for --exchange: find where the order-book numbers live in memory.
+static int RunExchangeScan(ProcessHandle process, MemoryReader reader, int[] stocks, float[] ratios)
+{
+    Console.WriteLine($"value-scan: stocks=[{string.Join(",", stocks)}] ratios=[{string.Join(",", ratios)}]");
+    // Pre-encode needles. Stock = int32; ratio = float32 (match within a small epsilon by quantizing).
+    var stockSet = stocks.ToHashSet();
+    var hits = new List<(nint addr, string kind, string val)>();
+    var buf = new byte[1 << 20];
+    var regions = 0;
+    foreach (var (rb, rs) in process.EnumerateReadableRegions(privateOnly: true, excludeImage: true))
+    {
+        regions++;
+        for (long o = 0; o < rs; o += buf.Length - 8)
+        {
+            var want = (int)Math.Min(buf.Length, rs - o);
+            var got = reader.TryReadBytes(rb + (nint)o, buf.AsSpan(0, want));
+            if (got <= 0) continue;
+            for (var i = 0; i + 4 <= got; i += 4)
+            {
+                var iv = BitConverter.ToInt32(buf, i);
+                if (stockSet.Contains(iv)) hits.Add((rb + (nint)(o + i), "stock", iv.ToString()));
+                if (ratios.Length > 0)
+                {
+                    var fv = BitConverter.ToSingle(buf, i);
+                    foreach (var r in ratios) if (Math.Abs(fv - r) < 0.01f) { hits.Add((rb + (nint)(o + i), "ratio", fv.ToString("0.###"))); break; }
+                }
+            }
+            if (hits.Count > 100000) break;
+        }
+        if (hits.Count > 100000) break;
+    }
+    Console.WriteLine($"scanned {regions} private regions; {hits.Count} raw hits ({hits.Count(h => h.kind == "stock")} stock, {hits.Count(h => h.kind == "ratio")} ratio).");
+    if (hits.Count == 0) { Console.WriteLine("no hits — the values likely drifted (orders filled). Re-read the tooltip and retry immediately."); return 0; }
+
+    // CLUSTER: an order book co-locates multiple of our needles within a small window. Sort by address,
+    // then group hits that fall within 0x800 of each other. A cluster carrying ≥2 DISTINCT needles is the book.
+    hits.Sort((a, b) => a.addr.CompareTo(b.addr));
+    var clusters = new List<List<(nint addr, string kind, string val)>>();
+    foreach (var h in hits)
+    {
+        if (clusters.Count > 0 && (long)h.addr - (long)clusters[^1][^1].addr <= 0x800) clusters[^1].Add(h);
+        else clusters.Add(new() { h });
+    }
+    var ranked = clusters.Where(c => c.Select(x => x.val).Distinct().Count() >= 2).OrderByDescending(c => c.Count).ToList();
+    Console.WriteLine($"\n{clusters.Count} clusters; {ranked.Count} carry ≥2 distinct needles (candidate order books).");
+    foreach (var c in ranked.Take(6))
+    {
+        var lo = c[0].addr; var hi = c[^1].addr;
+        Console.WriteLine($"\n*** cluster @0x{lo:X}..0x{hi:X} span=0x{(long)hi - (long)lo:X} ({c.Count} hits) ***");
+        foreach (var h in c.Take(24)) Console.WriteLine($"   0x{h.addr:X} {h.kind}={h.val}  (Δ from base 0x{(long)h.addr - (long)lo:X})");
+        // infer stride from consecutive same-kind hits
+        var stockAddrs = c.Where(h => h.kind == "stock").Select(h => (long)h.addr).ToList();
+        if (stockAddrs.Count >= 2)
+        {
+            var diffs = Enumerable.Range(1, stockAddrs.Count - 1).Select(i => stockAddrs[i] - stockAddrs[i - 1]).ToList();
+            Console.WriteLine($"   stock-to-stock deltas: [{string.Join(", ", diffs.Select(x => $"0x{x:X}"))}]  → likely entry stride");
+        }
+        // annotated dump around the cluster base so we can read the entry struct
+        Console.WriteLine("   --- annotated dump (base-0x20 .. +0x120) ---");
+        for (var off = -0x20; off <= 0x120; off += 4)
+        {
+            var a = lo + off;
+            reader.TryReadStruct<int>(a, out var iv);
+            reader.TryReadStruct<float>(a, out var fv);
+            var p = SafePtr(reader, a & ~7);
+            var note = stockSet.Contains(iv) ? "  <STOCK" : (ratios.Any(r => Math.Abs(fv - r) < 0.01f) ? "  <RATIO" : "");
+            Console.WriteLine($"     {(off < 0 ? "-" : "+")}0x{Math.Abs(off):X3} int={iv,-12} float={(float.IsFinite(fv) && Math.Abs(fv) < 1e9 ? fv.ToString("0.###") : "-"),-12}{note}");
+        }
+    }
     return 0;
 }
 
@@ -4665,10 +5831,14 @@ static int RunLootStruct(ProcessHandle process, MemoryReader reader, string name
         if (cf != 0 && reader.TryReadStruct<nint>(cur + Poe2.UiElement.ChildrenEnd, out var cl)) cn = ((long)cl - (long)cf) / 8;
         reader.TryReadStruct<float>(cur + Poe2.UiElement.SizeW, out var sw);
         reader.TryReadStruct<float>(cur + Poe2.UiElement.SizeH, out var sh);
+        reader.TryReadStruct<uint>(cur + Poe2.UiElement.Flags, out var fl);
+        // index of cur within its parent's Children (the stable-anchor coordinate)
+        var parent = SafePtr(reader, cur + Poe2.UiElement.Parent); var idx = -1;
+        if (parent != 0) { var pf = SafePtr(reader, parent + Poe2.UiElement.Children); if (pf != 0 && reader.TryReadStruct<nint>(parent + Poe2.UiElement.ChildrenEnd, out var pl)) { var pn = ((long)pl - (long)pf) / 8; for (long i = 0; i < pn && i < 4096; i++) if (SafePtr(reader, pf + (nint)(i * 8)) == cur) { idx = (int)i; break; } } }
         var tt = ReadStdWString(reader, cur + Poe2.UiElement.Text); tt = tt.Length > 0 ? $" text=\"{tt.Split('\n')[0]}\"" : "";
-        Console.WriteLine($"  lvl{lvl,2}: 0x{cur:X} children={cn,-4} size=({sw:0}x{sh:0}){tt}{(cur == uiRoot ? "  <= UiRoot" : "")}");
+        Console.WriteLine($"  lvl{lvl,2}: 0x{cur:X} childIdx={idx,-4} children={cn,-4} flags=0x{fl:X8} size=({sw:0}x{sh:0}){tt}{(cur == uiRoot ? "  <= UiRoot" : "")}");
         if (cur == uiRoot) break;
-        cur = SafePtr(reader, cur + Poe2.UiElement.Parent);
+        cur = parent;
     }
 
     // LINK TEST: scan the tag + each ancestor's struct for a pointer to an on-ground item entity.
@@ -7130,6 +8300,33 @@ static int RunDump(MemoryReader reader, nint addr, int len)
         var n = Math.Min(16, len - i);
         var hex = string.Join(' ', Enumerable.Range(0, n).Select(j => buf[i + j].ToString("X2")));
         Console.WriteLine($"  +0x{i:X3}  {hex}");
+    }
+    return 0;
+}
+
+// Float-aware structure dump: per 4-byte lane show int32 + float32; per 8-byte lane flag a plausible
+// pointer and any UTF-16 string it points to. Built for walking the currency-exchange order structs.
+static int RunDumpFloat(MemoryReader reader, nint addr, int len)
+{
+    Console.WriteLine($"Float/int dump 0x{len:X} bytes @ 0x{addr:X16}:");
+    var buf = new byte[len];
+    if (reader.TryReadBytes(addr, buf) <= 0) { Console.Error.WriteLine("read failed."); return 1; }
+    for (var i = 0; i + 4 <= len; i += 4)
+    {
+        var iv = BitConverter.ToInt32(buf, i);
+        var fv = BitConverter.ToSingle(buf, i);
+        var fvs = float.IsFinite(fv) && Math.Abs(fv) is > 1e-4f and < 1e9f ? fv.ToString("0.####") : "";
+        var note = "";
+        if (i + 8 <= len)
+        {
+            var p = (nint)BitConverter.ToInt64(buf, i);
+            if ((ulong)p is >= 0x10000 and <= 0x7FFFFFFFFFFF)
+            {
+                var s = reader.ReadStringUtf16(p, 32);
+                note = s.Length >= 2 && s.All(c => c >= ' ' && c < (char)0x7f) ? $"  →\"{s}\"" : "  ptr";
+            }
+        }
+        Console.WriteLine($"  +0x{i:X3}  int={iv,-12}  float={fvs,-12}{note}");
     }
     return 0;
 }

@@ -42,7 +42,11 @@ public readonly record struct ItemLabel(Vector3 World, string Name, string Value
 /// <summary><see cref="Element"/> is the node's UiElement address; the render thread re-reads its
 /// RelativePos into <see cref="X"/>/<see cref="Y"/> every frame so rings track atlas pan smoothly (the
 /// X/Y published by the world walk are the last-known fallback). 0 = no live element.</summary>
-public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false, bool Nav = false, nint Element = 0);
+/// <summary><see cref="ContentIcons"/> are resolved content-icon asset basenames (e.g.
+/// "AtlasIconContentBreach") drawn in a row above the node (#5); null/empty = no icons. <see cref="Visible"/>
+/// is the node's live in-game visibility — icons are suppressed on visible nodes (the game draws its own
+/// there) and shown on fogged/off-screen ones.</summary>
+public readonly record struct AtlasMark(float X, float Y, bool Selected, bool HasContent, bool Visited, bool Unlocked, int Biome, int IconType, string? Label = null, string? Color = null, bool Arrow = false, bool Nav = false, nint Element = 0, IReadOnlyList<string>? ContentIcons = null, bool Visible = false);
 
 /// <summary>One auto-route polyline from the player's current atlas node (or the accessible frontier) to a
 /// tracked target tile. <see cref="Points"/> are canvas-space node centers (relPos), projected with the
@@ -70,6 +74,14 @@ public readonly record struct RitualLabel(float X, float Y, float W, float H, st
 /// is made at world rate (the tag's text == the item name == the price key); the rect is re-read every
 /// render frame so the chip tracks the tag as the player moves.</summary>
 public readonly record struct LootTagLabel(float X, float Y, float W, float H, string Value, bool Highlight);
+
+/// <summary>One row of the Currency Exchange order-book ladder, aggregated at world rate in RadarApp.
+/// <see cref="Ratio"/> is Get/Give for the row; <see cref="Stock"/> is its listed count; <see cref="CumStock"/>
+/// is the running cumulative listed count down the ladder; <see cref="Recommended"/> marks the best (first)
+/// row of its side (drawn highlighted). Carried in <see cref="RenderContext"/> so the renderer just draws it.</summary>
+// One ladder tier: Ratio (normalized want-per-have), Stock/CumStock in SELL units (have-currency), and the
+// tier order's raw integer Give/Get amounts (for "clean lot" whole-number listing suggestions).
+public readonly record struct ExchangeRow(double Ratio, long Stock, long CumStock, bool Recommended, long Give = 0, long Get = 0);
 
 /// <summary>One reward a runeshape monolith will offer (computed BEFORE the panel is opened, from the
 /// device→station read + offline catalog). <see cref="Ex"/> is the priced full-stack value in Exalted
@@ -179,6 +191,15 @@ public sealed record RenderContext(
     IReadOnlyList<AtlasRouteInfo>? AtlasAutoRoutes = null,
     // Draw a biome-coloured border around tracked atlas labels (improvement 2). Mirrored from settings.
     bool AtlasBiomeBorder = true,
+    // On-node content icons (#5): master toggle + icon height (px). Icons themselves are carried per-mark
+    // in AtlasMark.ContentIcons; the renderer looks each basename up in its AtlasIconCache.
+    bool AtlasContentIcons = true,
+    float AtlasContentIconSize = 26f,
+    // Route chevron spacing (#4): gap between directional arrowheads along a route, ×chevron size.
+    float AtlasRouteArrowSpacing = 8f,
+    // DEBUG: draw every node's coverage ring (mirrors RadarSettings.AtlasDrawAll). When false, only
+    // tracked/nav/arrow nodes get a ring; untracked fogged nodes draw their content icons alone.
+    bool AtlasDrawAll = false,
     // Priced "Runeshape Combinations" reward labels (screen-space; drawn whenever the panel is open).
     IReadOnlyList<RuneLabel>? RuneLabels = null,
     // Priced ritual tribute-shop reward labels (screen-space; drawn whenever the shop is open).
@@ -191,4 +212,16 @@ public sealed record RenderContext(
     IReadOnlyList<MonolithMarker>? Monoliths = null,
     bool ShowMonolithPanel = true,
     // When true the monolith panel is shrunk to just its clickable title bar (toggled by clicking the header).
-    bool MonolithPanelCollapsed = false);
+    bool MonolithPanelCollapsed = false,
+    // ── Currency Exchange (Kalguur market) order-book depth panel (screen-space, top-right). Only populated
+    //    when the exchange panel is open; Offered/Wanted are the aggregated ladders, Summary the one-line
+    //    best-ratio/spread header. Mirrors the RuneLabels/Monoliths render-input pattern. ──
+    bool ExchangeOpen = false,
+    IReadOnlyList<ExchangeRow>? ExchangeOffered = null,
+    IReadOnlyList<ExchangeRow>? ExchangeWanted = null,
+    string? ExchangeSummary = null,
+    int ExchangeHaveQty = 0,           // the "I Have" quantity the user is selling (0 = blank/unknown)
+    string? ExchangeFillNote = null,   // the recommended-sale-ratio headline for that quantity
+    float ExchangePanelX = 0f,         // exchange-window screen rect top-left (pin anchor; 0 = default corner)
+    float ExchangePanelY = 0f,
+    bool ExchangeCollapsed = false);   // card shrunk to a small "expand" tab

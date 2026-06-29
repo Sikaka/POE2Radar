@@ -35,6 +35,7 @@ public sealed class RadarApp : IDisposable
     private readonly Poe2Live _liveApi;           // HTTP/API thread
     private readonly Poe2Atlas _atlas;
     private readonly Poe2Runeforge _runeforge;    // world thread (reads the rune-crafting reward panel)
+    private readonly Poe2CurrencyExchange _exchange; // world thread (reads the currency-exchange order book)
     private readonly OverlayWindow _window;
     private readonly OverlayRenderer _renderer;
     private readonly ApiServer _api;
@@ -82,6 +83,16 @@ public sealed class RadarApp : IDisposable
         public static readonly RuneRender Closed = new(false, Array.Empty<RuneLabel>());
     }
     private volatile RuneRender _runeRender = RuneRender.Closed;
+
+    // ── Currency Exchange (Kalguur market) order-book depth: same lock-free published-record idiom as
+    //    Runeforge. Built on the world thread (panel read + ladder aggregation), read by the render thread.
+    //    ExchangeRow is defined in RenderContext.cs so the ctx can carry it directly. ──
+    private sealed record ExchangeRender(bool Open, IReadOnlyList<ExchangeRow> Offered, IReadOnlyList<ExchangeRow> Wanted,
+        string Summary, int HaveQty, string FillNote, float PanelX, float PanelY, bool Collapsed)
+    {
+        public static readonly ExchangeRender Closed = new(false, Array.Empty<ExchangeRow>(), Array.Empty<ExchangeRow>(), "", 0, "", 0f, 0f, false);
+    }
+    private volatile ExchangeRender _exchangeRender = ExchangeRender.Closed;
 
     // ── Ritual tribute-shop priced-reward labels: same lock-free published-record idiom. Built on the world
     //    thread (read the 5 reward tiles' item entities + price each), drawn by the render thread on each tile.
@@ -269,6 +280,7 @@ public sealed class RadarApp : IDisposable
         _liveApi = new Poe2Live(_readerApi, gameStateSlot);
         _atlas = new Poe2Atlas(reader);
         _runeforge = new Poe2Runeforge(reader);   // world-thread reader stack
+        _exchange = new Poe2CurrencyExchange(reader); // world-thread reader stack (same as _runeforge)
         _window = OverlayWindow.Create();
         _renderer = new OverlayRenderer(_window);
         // Clicking a legend row toggles that landmark in the path selection. Purely local UI — the
@@ -653,6 +665,7 @@ public sealed class RadarApp : IDisposable
             _builtAtlasOnce = false; _lastAtlasSig = 0;
         }
         if (!ReferenceEquals(_runeRender, RuneRender.Closed)) _runeRender = RuneRender.Closed;
+        if (!ReferenceEquals(_exchangeRender, ExchangeRender.Closed)) _exchangeRender = ExchangeRender.Closed;
         if (!ReferenceEquals(_lootTags, LootTagRender.Empty)) _lootTags = LootTagRender.Empty;
     }
 
@@ -687,6 +700,112 @@ public sealed class RadarApp : IDisposable
             labels.Add(new RuneLabel(r.X, r.Y, r.W, r.H, text, color));
         }
         _runeRender = new RuneRender(labels.Count > 0, labels);
+    }
+
+    /// <summary>Read the open Currency Exchange (Kalguur market) order book (cheap when closed — the reader
+    /// returns <c>Book.Closed</c> without a panel) and publish an aggregated depth ladder per side for the
+    /// renderer to draw in the top-right corner. OFFERED ("I Have") is sorted best-ratio-first (Ratio
+    /// descending), WANTED ("I Want") best-first too (Ratio ascending); the "&lt; rest" everything-below bucket
+    /// is excluded from the drawn rows. Mirrors <see cref="UpdateRuneforge"/>'s gate→read→publish shape. World thread.</summary>
+    private void UpdateCurrencyExchange(nint inGameState)
+    {
+        var cfg = _settings.CurrencyExchange;
+        if (!cfg.Enabled)
+        {
+            if (!ReferenceEquals(_exchangeRender, ExchangeRender.Closed)) _exchangeRender = ExchangeRender.Closed;
+            return;
+        }
+        var book = _exchange.Read(inGameState);
+        if (!book.Open)
+        {
+            if (!ReferenceEquals(_exchangeRender, ExchangeRender.Closed)) _exchangeRender = ExchangeRender.Closed;
+            return;
+        }
+
+        // Aggregate one side of the book: drop the "< rest" everything-below bucket(s) into a separate stock
+        // total, sort the priced rows by ratio (the caller decides direction), then walk top-down computing
+        // the running cumulative listed count and flag the first (best) row Recommended.
+        static (List<ExchangeRow> rows, double bestRatio, long restStock) Aggregate(
+            IReadOnlyList<Poe2CurrencyExchange.StockEntry> side, bool descending)
+        {
+            long restStock = 0;
+            var priced = new List<Poe2CurrencyExchange.StockEntry>(side.Count);
+            foreach (var e in side)
+            {
+                if (e.IsRest) { restStock += e.ListedCount; continue; }   // the "< rest" bucket → total only
+                priced.Add(e);
+            }
+            priced.Sort((a, b) => descending ? b.Ratio.CompareTo(a.Ratio) : a.Ratio.CompareTo(b.Ratio));
+            var rows = new List<ExchangeRow>(priced.Count);
+            long cum = 0;
+            for (var i = 0; i < priced.Count; i++)
+            {
+                // The two sides store reciprocal ratio conventions (offered ≈ Get/Give &gt; 1; wanted ≈ 1/that).
+                // Normalize each to the readable ">1 : 1" form so both ladders show the same "want-per-have" unit.
+                var r = priced[i].Ratio; if (r > 0 && r < 1) r = 1.0 / r;
+                // In-game ListedCount is in WANT units (what you receive). Convert to SELL units (what you give) =
+                // stock / ratio, so "can move N" + the fill sim are in the quantity the user is actually selling
+                // and can be compared to the "I Have" qty. (Units confirmed in-game 2026-06-29.)
+                var sellUnits = r > 0 ? (long)System.Math.Round(priced[i].ListedCount / r) : priced[i].ListedCount;
+                cum += sellUnits;
+                rows.Add(new ExchangeRow(r, sellUnits, cum, Recommended: i == 0, Give: priced[i].Give, Get: priced[i].Get));
+            }
+            return (rows, rows.Count > 0 ? rows[0].Ratio : 0.0, restStock);
+        }
+
+        var (offered, bestOfferedRatio, _) = Aggregate(book.Offered, descending: true);
+        var (wanted, bestWantedRatio, _) = Aggregate(book.Wanted, descending: false);
+
+        // Summary: best (normalized) ratio on each side + the spread between them. NOTE: which side is the
+        // buy vs sell, and whether stock is raw ListedCount or ×Give/Get, still need in-game validation.
+        var parts = new List<string>(3);
+        if (offered.Count > 0) parts.Add($"best offered {bestOfferedRatio:0.##}:1");
+        if (wanted.Count > 0) parts.Add($"best wanted {bestWantedRatio:0.##}:1");
+        if (offered.Count > 0 && wanted.Count > 0 && bestOfferedRatio > 0 && bestWantedRatio > 0)
+        {
+            var spreadPct = System.Math.Abs(bestOfferedRatio - bestWantedRatio) / System.Math.Min(bestOfferedRatio, bestWantedRatio) * 100.0;
+            parts.Add($"spread {spreadPct:0.#}%");
+        }
+
+        // RECOMMENDED SALE RATIO (the headline): the best (highest) ratio at which the user's "I Have"
+        // quantity fully fills — i.e. the top tier whose CUMULATIVE depth already covers it. Snap the listing
+        // to whole "lots" (multiples of that tier's integer Give) so the give→get amounts are clean numbers.
+        // No quantity set → suggest one clean lot at the top of book. Quantity beyond all depth → recommend
+        // the deepest tier (captures everything available now) and flag the overflow. SELL ladder = OFFERED.
+        var fillNote = "";
+        var haveQty = book.HaveQty;
+        if (offered.Count > 0)
+        {
+            var top = offered[0];
+            if (haveQty <= 0)
+            {
+                fillNote = top.Give > 1
+                    ? $"Sell @ {top.Ratio:0.##}:1  ·  lot {top.Give:N0} → {top.Get:N0}"
+                    : $"Sell @ {top.Ratio:0.##}:1  ·  set 'I have' to size it";
+            }
+            else
+            {
+                var totalDepth = offered[^1].CumStock;
+                ExchangeRow tier = offered[^1]; long cap = totalDepth;
+                if (haveQty <= totalDepth) { tier = top; foreach (var r in offered) if (r.CumStock >= haveQty) { tier = r; break; } cap = haveQty; }
+                var give = tier.Give > 0 ? tier.Give : 1;
+                long recGive, recGet;
+                if (give > 1 && cap >= give) { var lots = cap / give; recGive = lots * give; recGet = lots * (tier.Get > 0 ? tier.Get : (long)Math.Round(give * tier.Ratio)); }
+                else { recGive = cap; recGet = (long)Math.Round(cap * tier.Ratio); }
+                var leftover = haveQty - recGive;
+                fillNote = leftover > 0
+                    ? $"Sell @ {tier.Ratio:0.##}:1  ·  list {recGive:N0} → {recGet:N0}  ({leftover:N0} over depth)"
+                    : $"Sell @ {tier.Ratio:0.##}:1  ·  list {recGive:N0} → {recGet:N0}";
+            }
+        }
+        // Pin anchor: the exchange panel's screen rect (read live on its own element) so the renderer can
+        // place the card at the panel's top-left. Falls back to (0,0) → renderer uses its default corner.
+        float panelX = 0f, panelY = 0f;
+        if (book.PanelAddr != 0 && _live.TryUiElementRect(book.PanelAddr, _window.Width, _window.Height, out var px, out var py, out _, out _))
+        { panelX = px; panelY = py; }
+
+        _exchangeRender = new ExchangeRender(true, offered, wanted, string.Join(" · ", parts), haveQty, fillNote,
+            panelX, panelY, _settings.CurrencyExchange.Collapsed);
     }
 
     /// <summary>Read the open ritual tribute shop (cheap when closed — gated on a shop-signature text element)
@@ -870,6 +989,7 @@ public sealed class RadarApp : IDisposable
         var snap = _world;
         var ar = _atlasRender;
         var rr = _runeRender;
+        var ex = _exchangeRender;
         var rit = _ritualRender;
         var mr = _monoRender;
         var lt = _lootTags;
@@ -974,7 +1094,8 @@ public sealed class RadarApp : IDisposable
 
         _state = new RadarState(inGame, snap.AreaHash, snap.AreaLevel, map.IsVisible, map.Zoom, player,
             snap.Entities, snap.Landmarks, _hpPct, _manaPct, _esPct, _autoFlask, _flaskNote,
-            snap.AreaCode, _charName, snap.CharLevel, _worldMs, _renderMs, mr.Markers, _fps);
+            snap.AreaCode, _charName, snap.CharLevel, _worldMs, _renderMs, mr.Markers, _fps,
+            ex.Open, ex.Summary, ex.Offered, ex.Wanted, ex.HaveQty, ex.FillNote);
 
         var realActive = _gameHwnd != 0 && GetForegroundWindow() == _gameHwnd;
         // "Always show" draws the overlay even when PoE2 isn't focused (for dashboard calibration).
@@ -1044,6 +1165,10 @@ public sealed class RadarApp : IDisposable
             AtlasCurrent: (ar.Open && _settings.AtlasShowRoute) ? atlasCurrent : null,
             AtlasAutoRoutes: (ar.Open && _settings.AtlasShowRoute && _settings.AtlasAutoRoute) ? atlasAutoRoutes : null,
             AtlasBiomeBorder: _settings.AtlasShowBiomeBorder,
+            AtlasContentIcons: _settings.AtlasShowContentIcons,
+            AtlasContentIconSize: _settings.AtlasContentIconSize,
+            AtlasRouteArrowSpacing: _settings.AtlasRouteArrowSpacing,
+            AtlasDrawAll: _settings.AtlasDrawAll,
             // Rune-crafting reward prices (screen-space; only when the panel is open).
             RuneLabels: rr.Open ? rr.Labels : null,
             // Ritual tribute-shop reward prices (screen-space; only when the shop is open).
@@ -1054,7 +1179,18 @@ public sealed class RadarApp : IDisposable
             // Runeshape monoliths: value-coloured map markers + nearby reward panel (world-space).
             Monoliths: monoliths,
             ShowMonolithPanel: _settings.Monoliths.ShowPanel,
-            MonolithPanelCollapsed: _settings.Monoliths.PanelCollapsed);
+            MonolithPanelCollapsed: _settings.Monoliths.PanelCollapsed,
+            // Currency Exchange order-book depth panel (screen-space; only when the exchange panel is open).
+            // RenderContext can't reference the private ExchangeRender record, so pass its pieces.
+            ExchangeOpen: ex.Open,
+            ExchangeOffered: ex.Open ? ex.Offered : null,
+            ExchangeWanted: ex.Open ? ex.Wanted : null,
+            ExchangeSummary: ex.Open ? ex.Summary : null,
+            ExchangeHaveQty: ex.Open ? ex.HaveQty : 0,
+            ExchangeFillNote: ex.Open ? ex.FillNote : null,
+            ExchangePanelX: ex.Open ? ex.PanelX : 0f,
+            ExchangePanelY: ex.Open ? ex.PanelY : 0f,
+            ExchangeCollapsed: ex.Open && ex.Collapsed);
         // The overlay is only visible while PoE2 is foreground (Render draws nothing otherwise). Skip
         // the whole draw + UpdateLayeredWindow blit when unfocused — but render once on the focus-loss
         // transition so the last visible frame is cleared rather than left frozen on screen.
@@ -1167,6 +1303,10 @@ public sealed class RadarApp : IDisposable
         UpdateRuneforge(inGameState);
         UpdateRitualRewards(inGameState);
 
+        // Currency Exchange (Kalguur market) order book — cheap when the panel is closed (the reader returns
+        // Book.Closed without resolving). Publishes its own _exchangeRender bundle.
+        UpdateCurrencyExchange(inGameState);
+
         // Loot-tag value chips — throttled, invisible-subtree-pruned UI scan; matches tag text → price.
         // Publishes its own _lootTags bundle (render thread re-reads each tag's live rect).
         UpdateLootTags(inGameState);
@@ -1276,6 +1416,13 @@ public sealed class RadarApp : IDisposable
         {
             _settings.Monoliths.PanelCollapsed = !_settings.Monoliths.PanelCollapsed;
             _settings.Save();   // persist so the panel stays as the user left it across restarts
+        }
+        else if (action == "exchange-collapse")
+        {
+            // X on the card collapses it to a small "expand" tab pinned to the exchange window; clicking the
+            // tab expands it again. Persisted so it stays as the user left it.
+            _settings.CurrencyExchange.Collapsed = !_settings.CurrencyExchange.Collapsed;
+            _settings.Save();
         }
     }
 
@@ -2082,7 +2229,7 @@ public sealed class RadarApp : IDisposable
             // highlight-rule pickers. These are the readable content/mechanic names (Powerful Map Boss,
             // Breach, Delirium, …) resolved from each node's EndgameMapAtlas row.
             allTags = nodes.SelectMany(n => n.Tags).GroupBy(t => t).OrderByDescending(g => g.Count())
-                .Select(g => new { tag = g.Key, count = g.Count() }),
+                .Select(g => new { tag = g.Key, count = g.Count(), desc = AtlasMapData.Shared.ContentDesc(g.Key), icon = AtlasMapData.Shared.ContentIcon(g.Key) }),
             // Distinct MAP NAMES (Sun Temple, Precursor Tower, Vaal City, …) — the separate "Map" filter
             // group, so towers/temples/specific maps are highlightable independently of rolled content.
             allMaps = nodes.Where(n => !string.IsNullOrEmpty(n.MapName)).GroupBy(n => n.MapName)
@@ -2091,6 +2238,12 @@ public sealed class RadarApp : IDisposable
             // targets (improvement 3): tracking "Tower" rings/routes EVERY tower without listing each name.
             allKinds = nodes.Where(n => !string.IsNullOrEmpty(n.Kind) && n.Kind != "Normal").GroupBy(n => n.Kind)
                 .OrderByDescending(g => g.Count()).Select(g => new { tag = g.Key, count = g.Count() }),
+            // maps.json classification tokens (#7): the map TYPE (e.g. "unique") + cross-cutting TAGS
+            // (lineage/arbiter). Selectable as one-click route/track targets like allKinds. De-duped union.
+            allDataTags = nodes.SelectMany(n =>
+                    (string.IsNullOrEmpty(n.MapType) || n.MapType == "normal" ? Enumerable.Empty<string>() : new[] { n.MapType })
+                    .Concat(n.MapDataTags ?? Array.Empty<string>()))
+                .GroupBy(t => t).OrderByDescending(g => g.Count()).Select(g => new { tag = g.Key, count = g.Count() }),
             // The currently active rules (persisted): tracked tags (rings) + arrow tags (off-screen
             // direction). Match against BOTH content tags and map names.
             highlightTags = _settings.AtlasHighlightTags,
@@ -2109,6 +2262,83 @@ public sealed class RadarApp : IDisposable
                     x = (int)n.X, y = (int)n.Y, map = n.MapName, tags = n.Tags,
                 }),
         };
+    }
+
+    // Built-in "Map Targets" preset (#6) — high-value maps to ring/route/arrow on first open, matched by
+    // exact internal MapId (reliable via the maps.json layer). Ported from the GameHelper2 Atlas plugin's
+    // BuiltInTargets. On=true → seeded as an active default; off targets are discoverable in the dashboard.
+    private static readonly (string Code, string Color, bool On)[] BuiltInAtlasTargets =
+    {
+        ("MapUberBoss_StoneCitadel",   "#e0b341", true),   // Citadel gold
+        ("MapUberBoss_IronCitadel",    "#e0b341", true),
+        ("MapUberBoss_CopperCitadel",  "#e0b341", true),
+        ("MapMothersoul_Male",         "#e0b341", true),   // Halls
+        ("MapMothersoul_Female",       "#e0b341", true),
+        ("MapDerelictMansion",         "#058f3b", true),   // green specials
+        ("MapCavernCity",              "#058f3b", true),
+        ("MapVaalVault",               "#058f3b", true),
+        ("MapUberBoss_JadeCitadel",    "#058f3b", true),
+        ("MapUniqueUntaintedParadise", "#ff9933", false),  // orange uniques (off by default)
+        ("MapUniqueCastaway",          "#ff9933", false),
+    };
+
+    // Default colour groups (#7), adopted from the plugin's Map Styles. Seeded once (AtlasGroupsSeeded).
+    private static readonly (string Name, string Color, string[] Maps)[] DefaultAtlasGroups =
+    {
+        ("Citadels", "#e0b341", new[] { "The Copper Citadel", "The Iron Citadel", "The Stone Citadel" }),
+        ("Halls",    "#e0b341", new[] { "The Matriarch Halls", "The Patriarch Halls" }),
+        ("Uniques",  "#ff9933", new[] { "Untainted Paradise", "Castaway", "The Fractured Lake",
+            "The Ezomyte Megaliths", "Moment of Zen", "The Viridian Wildwood" }),
+        ("Expedition", "#fff0d9", new[] { "Sprawling Jungle", "Secluded Temple", "Obscure Island",
+            "Mournful Cliffside", "Moor of Fallen Skies" }),
+    };
+
+    /// <summary>One-time seed (#6 + #7) of the built-in target rules + colour groups, gated on first full
+    /// node read (AllTagsResolved) so names/ids are available. Idempotent via the two settings guards; any
+    /// later dashboard edit keeps its own state (AtlasRulesInitialized locks out re-seeding the rules).</summary>
+    private void SeedAtlasDefaults(IReadOnlyList<Poe2Atlas.AtlasNodeLive> nodes)
+    {
+        if (!_atlas.AllTagsResolved) return;
+        var changed = false;
+
+        if (!_settings.AtlasTargetsSeeded)
+        {
+            // Resolve each built-in MapId to its live display name so the rules are dashboard-editable.
+            var byCode = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var n in nodes)
+                if (!string.IsNullOrEmpty(n.MapCode) && !string.IsNullOrEmpty(n.MapName))
+                    byCode.TryAdd(n.MapCode, n.MapName);
+            // ADDITIVE: add each built-in target name to the rule lists if not already present, never
+            // clearing the user's own rules. Seeds once (the AtlasTargetsSeeded guard), independent of the
+            // legacy AtlasRulesInitialized so it also reaches configs from before this preset existed.
+            _settings.AtlasHighlightTags ??= new List<string>();
+            _settings.AtlasNavTags ??= new List<string>();
+            _settings.AtlasArrowTags ??= new List<string>();
+            void AddOnce(List<string> list, string name) { if (!list.Contains(name)) list.Add(name); }
+            foreach (var (code, color, on) in BuiltInAtlasTargets)
+            {
+                if (!on || !byCode.TryGetValue(code, out var name)) continue;
+                AddOnce(_settings.AtlasHighlightTags, name); // ring
+                AddOnce(_settings.AtlasNavTags, name);       // + auto-route
+                AddOnce(_settings.AtlasArrowTags, name);     // + off-screen arrow
+                _settings.AtlasHighlightColors[name] = color;
+            }
+            _settings.AtlasTargetsSeeded = true;
+            _settings.AtlasRulesInitialized = true;
+            changed = true;
+        }
+
+        if (!_settings.AtlasGroupsSeeded)
+        {
+            _settings.AtlasGroups ??= new List<AtlasMapGroup>();
+            if (_settings.AtlasGroups.Count == 0)
+                foreach (var (name, color, maps) in DefaultAtlasGroups)
+                    _settings.AtlasGroups.Add(new AtlasMapGroup { Name = name, Color = color, Maps = new List<string>(maps) });
+            _settings.AtlasGroupsSeeded = true;
+            changed = true;
+        }
+
+        if (changed) _settings.Save();
     }
 
     /// <summary>Read the live atlas nodes and rebuild the highlight marks + F10 route, publishing them as a
@@ -2173,28 +2403,18 @@ public sealed class RadarApp : IDisposable
         sig = sig * 1000003L ^ (curGrid?.GetHashCode() ?? 0);                       // re-solve routes as the player moves
         sig = sig * 1000003L ^ (_settings.AtlasAutoRoute ? 1L : 0L) ^ ((long)_settings.AtlasAutoRouteMaxHops << 1);
         sig = sig * 1000003L ^ (long)(_settings.AtlasNavTags?.Count ?? 0);          // re-solve when the nav set changes
+        // Rebuild when the #3 hide filters, #5 icon toggle, or #7 group set change.
+        sig = sig * 1000003L ^ (_settings.AtlasHideCompleted ? 2L : 0L) ^ (_settings.AtlasHideAccessible ? 4L : 0L)
+            ^ (_settings.AtlasShowContentIcons ? 8L : 0L) ^ ((long)(_settings.AtlasGroups?.Count ?? 0) << 4);
         if (_builtAtlasOnce && _atlas.AllTagsResolved && sig == _lastAtlasSig)
             return;   // view + inputs unchanged → marks/route stay frozen (off-screen arrows don't jitter)
         _lastAtlasSig = sig; _builtAtlasOnce = true;
 
-        // One-time default: track + arrow every Citadel (high-value, usually off-screen) until the user
-        // edits the rules from the dashboard. Boss is intentionally NOT defaulted (too common). Wait until
-        // tag resolution has caught up (it's budget-limited per tick) so we seed ALL citadels, not just the
-        // first batch resolved.
-        if (!_settings.AtlasRulesInitialized && _atlas.AllTagsResolved)
-        {
-            var cit = nodes.Where(n => !string.IsNullOrEmpty(n.MapName) && n.MapName.Contains("Citadel", StringComparison.OrdinalIgnoreCase))
-                           .Select(n => n.MapName).Distinct().ToList();
-            if (cit.Count > 0)
-            {
-                _settings.AtlasHighlightTags = new List<string>(cit); // ring
-                _settings.AtlasNavTags = new List<string>(cit);       // + auto-route to them
-                _settings.AtlasArrowTags = new List<string>(cit);     // + off-screen arrow
-                foreach (var c in cit) _settings.AtlasHighlightColors[c] = "#e0b341"; // Citadel gold
-                _settings.AtlasRulesInitialized = true;
-                _settings.Save();
-            }
-        }
+        // One-time defaults (#6 + #7): seed the built-in "Map Targets" preset (Citadels/bosses/key uniques,
+        // matched by exact internal MapId via the maps.json layer and resolved to the live display name so
+        // the rules stay editable in the dashboard) + the colour groups. Waits for AllTagsResolved (tag
+        // resolution is budget-limited per tick) so the full node set — incl. names/ids — is available.
+        SeedAtlasDefaults(nodes);
 
         // A node matches a rule set if its map name or one of its content tags is in the set; returns the
         // matched tag (drives label + colour). Track set ⇒ draw a ring; Arrow set ⇒ off-screen edge arrow.
@@ -2209,7 +2429,22 @@ public sealed class RadarApp : IDisposable
             if (!string.IsNullOrEmpty(nd.MapName) && set.Contains(nd.MapName)) return nd.MapName;
             if (nd.Tags is { Count: > 0 }) foreach (var t in nd.Tags) if (set.Contains(t)) return t;
             if (!string.IsNullOrEmpty(nd.Kind) && nd.Kind != "Normal" && set.Contains(nd.Kind)) return nd.Kind;
+            // maps.json classification (#7): type (e.g. "unique") + cross-cutting tags (lineage/arbiter),
+            // so one-click "route to all uniques / lineage / arbiter" works without listing each map.
+            if (!string.IsNullOrEmpty(nd.MapType) && set.Contains(nd.MapType)) return nd.MapType;
+            if (nd.MapDataTags is { Count: > 0 }) foreach (var t in nd.MapDataTags) if (set.Contains(t)) return t;
             return null;
+        }
+        // #7 colour groups: map display name → group colour (the first group containing it). A matched node
+        // with no per-rule colour falls back to its group colour. Built once per rebuild.
+        Dictionary<string, string>? groupColor = null;
+        if (_settings.AtlasGroups is { Count: > 0 } groups)
+        {
+            groupColor = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var grp in groups)
+                if (grp?.Maps is { Count: > 0 } && !string.IsNullOrEmpty(grp.Color))
+                    foreach (var m in grp.Maps)
+                        if (!string.IsNullOrWhiteSpace(m)) groupColor.TryAdd(m, grp.Color);
         }
         var marks = new List<AtlasMark>(128);
         // Routing inputs gathered alongside the marks: grid→node ELEMENT (so the render thread re-reads each
@@ -2227,15 +2462,37 @@ public sealed class RadarApp : IDisposable
             var isTracked = selected || mTrack != null;   // Highlight (ring)
             var isNav = mNav != null;                     // Nav-to (route line)
             var isArrow = mArrow != null;                 // Arrow (off-screen pointer)
-            // ONLY highlighted/nav/arrow maps are drawn (the point: surface content the game hides).
-            // AtlasDrawAll debug overrides this to draw every node.
-            if (!_settings.AtlasDrawAll && !isTracked && !isNav && !isArrow) continue;
+
+            // #3 declutter: hide done maps (and optionally accessible-now ones). F10 route endpoints are
+            // drawn separately (BuildAtlasRoute), so they survive. Completed maps are already nav-excluded.
+            if (_settings.AtlasHideCompleted && n.Completed) continue;
+            if (_settings.AtlasHideAccessible && n.Accessible && !n.Completed) continue;
+
+            // #5 on-node content icons: resolve this node's content tags to icon asset basenames. Drawn on
+            // tracked nodes and, crucially, on FOGGED nodes the game hides icons on (surfacing what's hidden).
+            IReadOnlyList<string>? contentIcons = null;
+            if (_settings.AtlasShowContentIcons && n.Tags is { Count: > 0 })
+            {
+                List<string>? ic = null;
+                foreach (var t in n.Tags)
+                    if (AtlasMapData.Shared.ContentIcon(t) is { Length: > 0 } bn && (ic ??= new List<string>()).Contains(bn) == false)
+                        ic!.Add(bn);
+                contentIcons = ic;
+            }
+            // An untracked node still earns a mark when it's a FOGGED content node with a drawable icon (the
+            // renderer draws icons only for !Visible nodes), so we reveal content on un-revealed maps. Otherwise
+            // only highlighted/nav/arrow maps draw. AtlasDrawAll debug overrides this to draw every node.
+            bool foggedIconNode = contentIcons is { Count: > 0 } && !n.Visible;
+            if (!_settings.AtlasDrawAll && !isTracked && !isNav && !isArrow && !foggedIconNode) continue;
             var matched = mTrack ?? mNav ?? mArrow;
-            var label = matched ?? (n.Tags is { Count: > 0 } ? n.Tags[0] : (string.IsNullOrEmpty(n.MapName) ? null : n.MapName));
-            string? color = matched != null && _settings.AtlasHighlightColors.TryGetValue(matched, out var c) ? c : null;
+            var label = matched ?? (isTracked || isNav || isArrow
+                ? (n.Tags is { Count: > 0 } ? n.Tags[0] : (string.IsNullOrEmpty(n.MapName) ? null : n.MapName))
+                : null);   // icon-only fogged marks carry no label (icons alone)
+            string? color = matched != null && _settings.AtlasHighlightColors.TryGetValue(matched, out var c) ? c
+                : (groupColor != null && !string.IsNullOrEmpty(n.MapName) && groupColor.TryGetValue(n.MapName, out var gc) ? gc : null);
             // Route to NAV tiles that aren't already done — independent of the ring/arrow toggles.
             if (isNav && !n.Completed) { trackedGrids.Add(n.Grid); gridColor[n.Grid] = color; }
-            marks.Add(new AtlasMark(n.X, n.Y, isTracked, n.HasContent, n.Visited, n.Unlocked, n.Biome, n.IconType, label, color, isArrow, isNav, n.Element));
+            marks.Add(new AtlasMark(n.X, n.Y, isTracked, n.HasContent, n.Visited, n.Unlocked, n.Biome, n.IconType, label, color, isArrow, isNav, n.Element, contentIcons, n.Visible));
         }
 
         // ── Auto-routing (improvement 1): "you are here" + a route to each tracked tile ──────────────

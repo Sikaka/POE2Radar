@@ -57,6 +57,7 @@ public sealed class OverlayRenderer : IDisposable
 
     private readonly OverlayWindow _window;
     private TerrainBitmap? _terrain;
+    private AtlasIconCache? _atlasIcons;   // #5: decoded atlas content-icon bitmaps (lazy per render target)
 
     // Per-icon-name geometry, built lazily from the SVG IconLibrary and cached for the renderer's
     // lifetime. A name that can't be resolved/parsed is mapped to the Circle geometry so something
@@ -83,6 +84,7 @@ public sealed class OverlayRenderer : IDisposable
         _bPath     = rt.CreateSolidColorBrush(PathPalette[0]);
         _bStyle    = rt.CreateSolidColorBrush(ColText);
         _tf = _window.DWriteFactory.CreateTextFormat("Consolas", null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, 12f, "en-us");
+        _atlasIcons = new AtlasIconCache();   // decode embedded atlas content PNGs once (#5)
         _ready = true;
     }
 
@@ -132,6 +134,7 @@ public sealed class OverlayRenderer : IDisposable
                 DrawRitualRewards(rt, ctx);            // value chips on the ritual tribute-shop tiles (screen-space)
                 DrawLootTags(rt, ctx);                 // value chips on the game's own loot tags (screen-space)
                 DrawMonolithPanel(rt, ctx);            // nearby-monolith reward list (screen-space)
+                DrawCurrencyExchange(rt, ctx);         // currency-exchange order-book depth panel (top-right, screen-space)
             }
         }
         finally { rt.EndDraw(); }
@@ -154,6 +157,12 @@ public sealed class OverlayRenderer : IDisposable
               h3 = ctx.AtlasShearY, h4 = ctx.AtlasScaleY, h5 = ctx.AtlasOffY,
               h6 = ctx.AtlasPersX, h7 = ctx.AtlasPersY;
         NumVec2 Proj(NumVec2 p) { var w = h6 * p.X + h7 * p.Y + 1f; if (MathF.Abs(w) < 1e-6f) w = 1f; return new NumVec2((h0 * p.X + h1 * p.Y + h2) / w, (h3 * p.X + h4 * p.Y + h5) / w); }
+        // Off-screen (culled) atlas nodes report NOISY relPos, so segments touching them wobble and their
+        // chevrons spin in random directions. Gate on projected screen position: draw a line only when a
+        // segment is at least partly on-screen, and chevrons only when BOTH endpoints are on-screen (so the
+        // arrow direction is trustworthy). W/H from the context; margins keep edge-crossing routes visible.
+        float W = ctx.WindowWidth, H = ctx.WindowHeight;
+        bool On(NumVec2 p, float m) => p.X >= -m && p.X <= W + m && p.Y >= -m && p.Y <= H + m;
 
         var dark = new Color4(0f, 0f, 0f, 0.6f);
         var bright = new Color4(0.235f, 0.86f, 1f, 0.95f);   // cyan
@@ -161,24 +170,60 @@ public sealed class OverlayRenderer : IDisposable
         var gold = new Color4(0.878f, 0.702f, 0.255f, 1f);
 
         // ── Auto-routes (improvement 1): one polyline per tracked tile, in its rule colour, with a hop chip
-        // at the target. Drawn UNDER the manual F10 route + the marks. ──
+        // at the target + directional chevrons (#4). Drawn UNDER the manual F10 route + the marks. ──
         if (hasAuto)
         {
-            foreach (var ar in autos!)
+            // #4 per-edge interleaving: routes from the accessible frontier share their first segments
+            // constantly, so a shared edge gets each route's chevrons at a distinct phase slot — overlapping
+            // colours stay visible instead of the last-drawn one overpainting. Keyed by canvas-space coords.
+            var edgeRoutes = new Dictionary<(long, long, long, long), List<int>>();
+            for (var ri = 0; ri < autos!.Count; ri++)
             {
+                if (autos[ri].Points is not { Count: >= 2 } rp) continue;
+                for (var i = 1; i < rp.Count; i++)
+                {
+                    var k = AtlasEdgeKey(rp[i - 1], rp[i]);
+                    if (!edgeRoutes.TryGetValue(k, out var l)) edgeRoutes[k] = l = new List<int>();
+                    l.Add(ri);
+                }
+            }
+            float spacingMul = MathF.Max(1.5f, ctx.AtlasRouteArrowSpacing);
+            const float chevron = 7f;
+            float spacing = chevron * spacingMul;
+            for (var ri = 0; ri < autos.Count; ri++)
+            {
+                var ar = autos[ri];
                 if (ar.Points is not { Count: >= 2 } rp) continue;
                 // Softer + thinner than the manual F10 route: auto-routes are ambient guides to every tracked
                 // tile, so they shouldn't dominate the screen as a thick web. Lower alpha + lighter underlay.
                 var col = string.IsNullOrEmpty(ar.Color) ? new Color4(0.235f, 0.86f, 1f, 0.65f) : ParseColor(ar.Color, 0.65f);
                 var pts = new NumVec2[rp.Count];
                 for (var i = 0; i < rp.Count; i++) pts[i] = Proj(rp[i]);
-                _bStyle!.Color = new Color4(0f, 0f, 0f, 0.4f); for (var i = 1; i < pts.Length; i++) rt.DrawLine(pts[i - 1], pts[i], _bStyle, 3f);
-                _bStyle.Color = col; for (var i = 1; i < pts.Length; i++) rt.DrawLine(pts[i - 1], pts[i], _bStyle, 1.75f);
-                // Hop-count chip at the target end.
+                for (var i = 1; i < pts.Length; i++)
+                {
+                    var a = pts[i - 1]; var b = pts[i];
+                    if (!On(a, 64f) && !On(b, 64f)) continue;   // fully off-screen segment → skip (relPos is noise)
+                    _bStyle!.Color = new Color4(0f, 0f, 0f, 0.4f); rt.DrawLine(a, b, _bStyle, 3f);
+                    _bStyle.Color = col; rt.DrawLine(a, b, _bStyle, 1.75f);
+                    if (!On(a, 0f) || !On(b, 0f)) continue;     // chevron direction only trustworthy fully on-screen
+                    var key = AtlasEdgeKey(rp[i - 1], rp[i]);
+                    float phase = 0.5f;
+                    if (edgeRoutes.TryGetValue(key, out var sh) && sh.Count > 0)
+                    {
+                        var local = sh.IndexOf(ri); if (local < 0) local = 0;
+                        phase = (local + 0.5f) / sh.Count;
+                    }
+                    var carry = spacing * phase;   // reset per segment so the phase is honoured on every edge
+                    DrawAtlasChevrons(rt, a, b, col, chevron, spacing, ref carry);
+                }
+                // Hop-count chip at the target end (only when the target is on-screen).
                 var tgt = pts[^1];
-                string ht = ar.Hops.ToString();
-                rt.FillRectangle(new Vortice.RawRectF(tgt.X - 11f, tgt.Y - 26f, tgt.X + 11f, tgt.Y - 10f), _bPanel!);
-                rt.DrawText(ht, _tf!, new Rect(tgt.X - 9f, tgt.Y - 26f, tgt.X + 11f, tgt.Y - 10f), _bText!, DrawTextOptions.Clip);
+                if (On(tgt, 0f))
+                {
+                    string ht = ar.Hops.ToString();
+                    rt.FillRectangle(new Vortice.RawRectF(tgt.X - 11f, tgt.Y - 26f, tgt.X + 11f, tgt.Y - 10f), _bPanel!);
+                    rt.DrawText(ht, _tf!, new Rect(tgt.X - 9f, tgt.Y - 26f, tgt.X + 11f, tgt.Y - 10f), _bText!, DrawTextOptions.Clip);
+                }
             }
         }
 
@@ -187,9 +232,17 @@ public sealed class OverlayRenderer : IDisposable
             // Graph polyline: dark underlay then bright line (cheap outline for contrast over the atlas), hop dots.
             var pts = new NumVec2[route.Count];
             for (var i = 0; i < route.Count; i++) pts[i] = Proj(route[i]);
-            _bStyle!.Color = dark; for (var i = 1; i < pts.Length; i++) rt.DrawLine(pts[i - 1], pts[i], _bStyle, 7f);
-            _bStyle.Color = bright; for (var i = 1; i < pts.Length; i++) rt.DrawLine(pts[i - 1], pts[i], _bStyle, 3.5f);
-            _bStyle.Color = bright; for (var i = 1; i < pts.Length - 1; i++) rt.DrawEllipse(new Ellipse(pts[i], 4f, 4f), _bStyle, 2f);
+            float mspacing = 9f * MathF.Max(1.5f, ctx.AtlasRouteArrowSpacing);
+            for (var i = 1; i < pts.Length; i++)
+            {
+                var a = pts[i - 1]; var b = pts[i];
+                if (!On(a, 64f) && !On(b, 64f)) continue;   // fully off-screen segment → skip (relPos is noise)
+                _bStyle!.Color = dark; rt.DrawLine(a, b, _bStyle, 7f);
+                _bStyle.Color = bright; rt.DrawLine(a, b, _bStyle, 3.5f);
+                if (!On(a, 0f) || !On(b, 0f)) continue;     // chevrons + hop dots only when fully on-screen
+                if (i < pts.Length - 1) rt.DrawEllipse(new Ellipse(b, 4f, 4f), _bStyle, 2f);
+                var carry = mspacing * 0.5f; DrawAtlasChevrons(rt, a, b, dark, 9f, mspacing, ref carry);
+            }
         }
         else if (start is { } sa && end is { } eb)
         {
@@ -258,24 +311,34 @@ public sealed class OverlayRenderer : IDisposable
                 _bStyle.Color = ctx.AtlasBiomeBorder ? BiomeColor(n.Biome) : col;
                 rt.FillEllipse(new Ellipse(c, 3f, 3f), _bStyle);
             }
-            else if (n.IconType > 0) // DEBUG (AtlasDrawAll): content-tag element
+            else if (ctx.AtlasDrawAll && n.IconType > 0) // DEBUG (AtlasDrawAll): content-tag element
             {
                 _bStyle!.Color = new Color4(1f, 0.9f, 0.2f, 0.9f);
                 rt.DrawEllipse(new Ellipse(c, 7f, 7f), _bStyle, 2f);
             }
-            else if (n.Visited)
+            else if (ctx.AtlasDrawAll && n.Visited)
             {
                 _bStyle!.Color = new Color4(1f, 0.2f, 1f, 1f);
                 rt.DrawEllipse(new Ellipse(c, 16f, 16f), _bStyle, 3f);
                 rt.DrawEllipse(new Ellipse(c, 8f, 8f), _bStyle, 2f);
             }
-            else
+            else if (ctx.AtlasDrawAll)
             {
                 _bStyle!.Color = n.HasContent ? new Color4(1f, 0.62f, 0.26f, 0.95f)
                                : new Color4(0.43f, 0.91f, 0.53f, 0.85f);
                 rt.DrawEllipse(new Ellipse(c, 11f, 11f), _bStyle, 2f);
             }
-            var label = n.Label ?? (n.IconType > 0 ? n.IconType.ToString() : null);
+
+            // #5 content icons: drawn in a row above the node, but ONLY on FOGGED nodes (the game already
+            // renders its own content icons on revealed ones, so we'd double up). Tracked rings + icons can
+            // co-exist on a fogged tracked node. ring radius below mirrors the ring drawn above.
+            if (ctx.AtlasContentIcons && !n.Visible && n.ContentIcons is { Count: > 0 } && _atlasIcons != null)
+            {
+                float ringR = (n.Selected || n.Arrow) ? 12f : (n.Nav ? 9f : (ctx.AtlasDrawAll ? 11f : 0f));
+                DrawAtlasContentIcons(rt, n.ContentIcons, sx, sy - ringR, ctx.AtlasContentIconSize);
+            }
+
+            var label = n.Label ?? (ctx.AtlasDrawAll && n.IconType > 0 ? n.IconType.ToString() : null);
             if (label != null)
             {
                 // Backing chip behind the label (improvement 2) so map names stay readable over the busy
@@ -287,6 +350,66 @@ public sealed class OverlayRenderer : IDisposable
                 rt.DrawText(label, _tf!, new Rect(lx, ly, lx + lw + 40f, ly + 18f), _bText!, DrawTextOptions.Clip);
             }
         }
+    }
+
+    /// <summary>Draw a centered row of content icons (#5) above a node. <paramref name="cx"/> is the node's
+    /// screen X; <paramref name="topY"/> is the node ring's top — icons sit just above it. Square cells of
+    /// <paramref name="iconH"/> px; only basenames present in the cache draw. A dark backing keeps the row
+    /// readable over the busy atlas art. Called only for FOGGED nodes (the game draws its own on revealed ones).</summary>
+    private void DrawAtlasContentIcons(ID2D1RenderTarget rt, IReadOnlyList<string> basenames, float cx, float topY, float iconH)
+    {
+        if (iconH < 6f) iconH = 6f;
+        var cnt = 0;
+        foreach (var bn in basenames) if (_atlasIcons!.Get(rt, bn) != null) cnt++;
+        if (cnt == 0) return;
+        const float gap = 3f;
+        float totalW = cnt * iconH + (cnt - 1) * gap;
+        float ix = cx - totalW * 0.5f;
+        float iy = topY - iconH - 5f;
+        rt.FillRectangle(new Vortice.RawRectF(ix - 3f, iy - 2f, ix + totalW + 3f, iy + iconH + 2f), _bPanel!);
+        foreach (var bn in basenames)
+        {
+            var bmp = _atlasIcons!.Get(rt, bn);
+            if (bmp == null) continue;
+            rt.DrawBitmap(bmp, 1f, BitmapInterpolationMode.Linear, new Rect(ix, iy, ix + iconH, iy + iconH));
+            ix += iconH + gap;
+        }
+    }
+
+    /// <summary>Lay stroked arrowhead chevrons (a row of "&gt;" pointing a→b) at <paramref name="spacing"/>
+    /// intervals along the segment (#4). <paramref name="carry"/> holds the leftover distance into the next
+    /// segment so spacing stays even across a multi-segment route. Ported from the GameHelper2 Atlas plugin's
+    /// DrawChevrons (filled triangles → stroked chevrons here, cheaper in Direct2D and reads the same).</summary>
+    private void DrawAtlasChevrons(ID2D1RenderTarget rt, NumVec2 a, NumVec2 b, Color4 color, float size, float spacing, ref float carry)
+    {
+        var d = b - a;
+        float len = d.Length();
+        if (len < 1e-3f) { return; }
+        var dir = d / len;
+        var perp = new NumVec2(-dir.Y, dir.X);
+        float half = size * 0.5f;
+        _bStyle!.Color = color;
+        float t = carry;
+        while (t < len)
+        {
+            var p = a + dir * t;
+            var tip = p + dir * half;
+            var baseMid = p - dir * half;
+            rt.DrawLine(tip, baseMid + perp * half, _bStyle, 1.5f);
+            rt.DrawLine(tip, baseMid - perp * half, _bStyle, 1.5f);
+            t += spacing;
+        }
+        carry = t - len;
+    }
+
+    /// <summary>Direction-independent key for a route edge (canvas-space endpoints rounded to int), so a
+    /// segment shared by two routes hashes the same regardless of which way each route walks it (#4).</summary>
+    private static (long, long, long, long) AtlasEdgeKey(NumVec2 a, NumVec2 b)
+    {
+        long ax = (long)MathF.Round(a.X), ay = (long)MathF.Round(a.Y);
+        long bx = (long)MathF.Round(b.X), by = (long)MathF.Round(b.Y);
+        bool aFirst = ax < bx || (ax == bx && ay <= by);
+        return aFirst ? (ax, ay, bx, by) : (bx, by, ax, ay);
     }
 
     // Atlas biome index (0..12) → border colour (improvement 2). Order matches the dashboard BIOMES list:
@@ -578,6 +701,122 @@ public sealed class OverlayRenderer : IDisposable
                 rt.DrawText($"  {r.Ex,4:F0}  {r.Name}", _tf!, new Rect(x + pad, cy, x + w - pad, cy + lineH), _bText!, DrawTextOptions.Clip);
                 cy += lineH; shown++;
             }
+        }
+    }
+
+    private static readonly Color4 ColExchangeRec = ColorFromU(0xFF66E066u);   // green — best ratio (top of book)
+    private static readonly Color4 ColExchangeVol = ColorFromU(0xFFE6C84Du);   // amber — deepest tier (most volume)
+    private static readonly Color4 ColExchangeDim = ColorFromU(0xFF9A9488u);   // warm grey — labels/secondary
+    private static readonly Color4 ColExchangeFill = ColorFromU(0xFF8FE3FFu);  // cyan — the hero (your fill result)
+    private static readonly Color4 ColExchangeGold = ColorFromU(0xFFC8A24Du);  // Kalguur gold — title accent rule
+    private static readonly Color4 ColExchangeBar = ColorFromU(0xFF6E5A30u);   // muted bronze — depth bars
+
+    /// <summary>The Currency Exchange "Sell Guide": a TOP-RIGHT panel (only while the exchange is open) that
+    /// answers "what ratio do I list at to get the best return for what I'm selling?". The WANTED side is the
+    /// RECEIVE ladder (your counterparties — what you get per unit sold); rows are best-ratio-first, shown as
+    /// "list ≥ {ratio} → move up to {cumulative}". The best ratio (thin top — only a little fills there) is
+    /// green; the deepest single tier (best ratio you can actually move size at) is amber. A one-line note
+    /// shows the competition (other sellers, the OFFERED side's best). Screen-space; mirrors DrawRuneforge's
+    /// brush/text reuse. NOTE: volume units (raw ListedCount vs ×Give/Get) pending in-game validation.</summary>
+    private void DrawCurrencyExchange(ID2D1RenderTarget rt, RenderContext ctx)
+    {
+        if (!ctx.ExchangeOpen) return;
+        // OFFERED = orders giving your have-item for your want-item = your actual SELL ladder (the ≤market
+        // rows the game shows). WANTED = the opposite (buy) side. Both already in SELL units (RadarApp).
+        var sell = ctx.ExchangeOffered ?? (IReadOnlyList<ExchangeRow>)Array.Empty<ExchangeRow>();
+        var buy = ctx.ExchangeWanted ?? (IReadOnlyList<ExchangeRow>)Array.Empty<ExchangeRow>();
+        if (sell.Count == 0) return;
+
+        const float pad = 10f, rowH = 16f, titleH = 17f, subH = 14f, heroH = 18f, headH = 14f, sepH = 6f;
+        const float w = 320f, tabW = 122f, tabH = 22f;
+        // Pin to the exchange window: the card/tab sits just LEFT of the panel, top-aligned (fall back to the
+        // top-right corner when the panel screen rect isn't available).
+        bool pinned = ctx.ExchangePanelX > 1f;
+        float anchorY = pinned ? ctx.ExchangePanelY : 10f;
+
+        // Collapsed → a small "expand" tab; clicking it reopens (action "exchange-collapse").
+        if (ctx.ExchangeCollapsed)
+        {
+            float tx = pinned ? Math.Max(4f, ctx.ExchangePanelX - tabW - 8f) : ctx.WindowWidth - tabW - 10f;
+            var tab = new Vortice.RawRectF(tx, anchorY, tx + tabW, anchorY + tabH);
+            rt.FillRectangle(tab, _bPanel!);
+            _bStyle!.Color = ColExchangeGold;
+            rt.FillRectangle(new Vortice.RawRectF(tx, anchorY + tabH - 2f, tx + tabW, anchorY + tabH), _bStyle);  // gold underline
+            _bStyle.Color = ColExchangeFill;
+            rt.DrawText("+ Sell Guide", _tf!, new Rect(tx + 7f, anchorY + 2f, tx + tabW - 4f, anchorY + tabH), _bStyle, DrawTextOptions.Clip);
+            _legendRowRects.Add((tab, "exchange-collapse"));
+            return;
+        }
+
+        const int maxRows = 6;
+        var rowsShown = Math.Min(maxRows, sell.Count);
+        var hasFill = ctx.ExchangeHaveQty > 0 && !string.IsNullOrEmpty(ctx.ExchangeFillNote);
+        var top = sell[0];
+        // The deepest tier (max marginal volume) gets the amber bar; scale all bars to the largest tier.
+        var deepIdx = 0; long maxStock = 1;
+        for (var i = 0; i < rowsShown; i++) if (sell[i].Stock > maxStock) { maxStock = sell[i].Stock; deepIdx = i; }
+
+        float h = pad * 2f + titleH + subH + (hasFill ? heroH + sepH : 0f) + sepH + headH + rowH * rowsShown;
+        float x = pinned ? Math.Max(4f, ctx.ExchangePanelX - w - 8f) : ctx.WindowWidth - w - 10f;
+        float y = anchorY;
+        rt.FillRectangle(new Vortice.RawRectF(x, y, x + w, y + h), _bPanel!);
+        float lx = x + pad, rx = x + w - pad, cy = y + pad;
+
+        // X close button (collapses to the tab), top-right of the card.
+        float bx = x + w - 17f;
+        _bStyle!.Color = ColExchangeDim;
+        rt.DrawText("X", _tf!, new Rect(bx, y + 2f, x + w, y + 18f), _bStyle, DrawTextOptions.Clip);
+        _legendRowRects.Add((new Vortice.RawRectF(bx - 3f, y + 2f, x + w, y + 19f), "exchange-collapse"));
+
+        // Title + Kalguur-gold accent rule (the signature PoE touch); leave room for the X.
+        rt.DrawText("Currency Exchange", _tf!, new Rect(lx, cy, bx - 4f, cy + titleH), _bText!, DrawTextOptions.Clip);
+        cy += titleH;
+        _bStyle.Color = ColExchangeGold;
+        rt.FillRectangle(new Vortice.RawRectF(lx, cy + 1f, rx, cy + 2.5f), _bStyle);
+        cy += 4f;
+
+        // Subtitle: best sell/buy ratios + spread, at a glance (warm grey).
+        _bStyle.Color = ColExchangeDim;
+        string sub;
+        if (buy.Count > 0 && buy[0].Ratio > 0 && top.Ratio > 0)
+        {
+            var spreadPct = Math.Abs(top.Ratio - buy[0].Ratio) / Math.Min(top.Ratio, buy[0].Ratio) * 100.0;
+            sub = $"sell {top.Ratio:0.##}:1  ·  buy {buy[0].Ratio:0.##}:1  ·  spread {spreadPct:0.#}%";
+        }
+        else sub = $"sell {top.Ratio:0.##}:1";
+        rt.DrawText(sub, _tf!, new Rect(lx, cy, rx, cy + subH), _bStyle, DrawTextOptions.Clip);
+        cy += subH;
+
+        // Hero — the recommended sale ratio for the user's quantity (cyan, the one bold element).
+        if (hasFill)
+        {
+            cy += sepH;
+            _bStyle.Color = ColExchangeFill;
+            rt.DrawText(ctx.ExchangeFillNote!, _tf!, new Rect(lx, cy, rx, cy + heroH), _bStyle, DrawTextOptions.Clip);
+            cy += heroH;
+        }
+
+        // Depth ladder header + bars (the signature). ratio | bar∝volume | cumulative.
+        cy += sepH;
+        _bStyle.Color = ColExchangeDim;
+        rt.DrawText("list ≥", _tf!, new Rect(lx, cy, lx + 52f, cy + headH), _bStyle, DrawTextOptions.Clip);
+        rt.DrawText("can move →", _tf!, new Rect(rx - 96f, cy, rx, cy + headH), _bStyle, DrawTextOptions.Clip);
+        cy += headH;
+
+        const float ratioW = 52f, cumW = 52f, barGap = 6f;
+        float barX = lx + ratioW + barGap, barMaxW = rx - cumW - barGap - barX;
+        for (var i = 0; i < rowsShown; i++)
+        {
+            var r = sell[i];
+            var rowCol = i == 0 ? ColExchangeRec : i == deepIdx ? ColExchangeVol : ColText;
+            // bar ∝ this tier's marginal volume; best=green, deepest=amber, else bronze.
+            var bw = Math.Max(2f, (float)r.Stock / maxStock * barMaxW);
+            _bStyle.Color = i == 0 ? ColExchangeRec : i == deepIdx ? ColExchangeVol : ColExchangeBar;
+            rt.FillRectangle(new Vortice.RawRectF(barX, cy + 2f, barX + bw, cy + rowH - 2f), _bStyle);
+            _bStyle.Color = rowCol;
+            rt.DrawText($"{r.Ratio:0.##}:1", _tf!, new Rect(lx, cy, lx + ratioW, cy + rowH), _bStyle, DrawTextOptions.Clip);
+            rt.DrawText(r.CumStock.ToString("N0"), _tf!, new Rect(rx - cumW, cy, rx, cy + rowH), _bStyle, DrawTextOptions.Clip);
+            cy += rowH;
         }
     }
 
@@ -949,5 +1188,6 @@ public sealed class OverlayRenderer : IDisposable
         _geoCache.Clear();
         _tf?.Dispose();
         _terrain?.Dispose();
+        _atlasIcons?.Dispose();
     }
 }

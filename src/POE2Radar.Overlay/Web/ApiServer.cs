@@ -166,6 +166,17 @@ public sealed class ApiServer : IDisposable
                         bestEx = m.BestEx, bestName = m.BestName, color = m.Color,
                         rewards = m.Rewards.Select(r => new { name = r.Name, count = r.Count, ex = r.Ex, size = r.Size, runes = r.Runes }),
                     }),
+                    // Currency-exchange live order book (when the exchange panel is open) for the dashboard
+                    // depth card + autonomous verification. Ratio = Get/Give; cum = running stock total.
+                    currencyExchange = new
+                    {
+                        open = s.ExchangeOpen,
+                        summary = s.ExchangeSummary,
+                        haveQty = s.ExchangeHaveQty,
+                        fillNote = s.ExchangeFillNote,
+                        offered = (s.ExchangeOffered ?? Array.Empty<ExchangeRow>()).Select(r => new { ratio = r.Ratio, stock = r.Stock, cum = r.CumStock, rec = r.Recommended }),
+                        wanted = (s.ExchangeWanted ?? Array.Empty<ExchangeRow>()).Select(r => new { ratio = r.Ratio, stock = r.Stock, cum = r.CumStock, rec = r.Recommended }),
+                    },
                 }, Json));
                 break;
             }
@@ -492,6 +503,14 @@ public sealed class ApiServer : IDisposable
         terrain = _settings.Terrain, // walkable-terrain bitmap colors/transparency
         groundItems = _settings.GroundItems, // ground-item value overlay (enabled / highlight threshold / league)
         monoliths = _settings.Monoliths, // runeshape-monolith (expedition) reward overlay + value gate
+        currencyExchange = _settings.CurrencyExchange, // currency-exchange order-book depth panel (enabled / max rows)
+        // Atlas declutter / content-icon / route-chevron options + colour groups (#3/#4/#5/#7).
+        atlasHideCompleted = _settings.AtlasHideCompleted,
+        atlasHideAccessible = _settings.AtlasHideAccessible,
+        atlasShowContentIcons = _settings.AtlasShowContentIcons,
+        atlasContentIconSize = _settings.AtlasContentIconSize,
+        atlasRouteArrowSpacing = _settings.AtlasRouteArrowSpacing,
+        atlasGroups = _settings.AtlasGroups,
     };
 
     /// <summary>Apply only whitelisted radar/visual keys from a posted JSON object; persists on change.</summary>
@@ -533,6 +552,12 @@ public sealed class ApiServer : IDisposable
                 case "manaCooldownMs" when TryInt(p.Value, out var n): _settings.ManaCooldownMs = Math.Clamp(n, 0, 60000); applied.Add(p.Name); break;
                 case "lifeKey" when TryInt(p.Value, out var n): _settings.LifeKey = Math.Clamp(n, 1, 255); applied.Add(p.Name); break;
                 case "manaKey" when TryInt(p.Value, out var n): _settings.ManaKey = Math.Clamp(n, 1, 255); applied.Add(p.Name); break;
+                // Atlas declutter + content-icon + route-chevron options (#3/#4/#5).
+                case "atlasHideCompleted" when TryBool(p.Value, out var b): _settings.AtlasHideCompleted = b; applied.Add(p.Name); break;
+                case "atlasHideAccessible" when TryBool(p.Value, out var b): _settings.AtlasHideAccessible = b; applied.Add(p.Name); break;
+                case "atlasShowContentIcons" when TryBool(p.Value, out var b): _settings.AtlasShowContentIcons = b; applied.Add(p.Name); break;
+                case "atlasContentIconSize" when TryFloat(p.Value, out var f): _settings.AtlasContentIconSize = Math.Clamp(f, 12f, 64f); applied.Add(p.Name); break;
+                case "atlasRouteArrowSpacing" when TryFloat(p.Value, out var f): _settings.AtlasRouteArrowSpacing = Math.Clamp(f, 1.5f, 18f); applied.Add(p.Name); break;
                 // Whole-object writes (the dashboard re-POSTs the full sub-object on edit). Parsed,
                 // sanitized/clamped, then swapped in. A malformed sub-object is skipped, not fatal.
                 case "styles" when p.Value.ValueKind == JsonValueKind.Object:
@@ -550,6 +575,13 @@ public sealed class ApiServer : IDisposable
                 case "monoliths" when p.Value.ValueKind == JsonValueKind.Object:
                     if (TryParseMonoliths(p.Value, out var mono)) { _settings.Monoliths = mono; applied.Add(p.Name); }
                     break;
+                case "currencyExchange" when p.Value.ValueKind == JsonValueKind.Object:
+                    if (TryParseCurrencyExchange(p.Value, out var ce)) { _settings.CurrencyExchange = ce; applied.Add(p.Name); }
+                    break;
+                // Atlas colour groups (#7): the dashboard re-POSTs the full array on edit.
+                case "atlasGroups" when p.Value.ValueKind == JsonValueKind.Array:
+                    if (TryParseAtlasGroups(p.Value, out var grps)) { _settings.AtlasGroups = grps; _settings.AtlasGroupsSeeded = true; applied.Add(p.Name); }
+                    break;
                 // Anything else (apiPort, unknown keys) is ignored by design.
             }
         }
@@ -559,6 +591,33 @@ public sealed class ApiServer : IDisposable
     }
 
     private static readonly Regex HexColor = new("^#[0-9A-Fa-f]{6}$", RegexOptions.Compiled);
+
+    /// <summary>Parse the atlas colour-groups array (#7) the dashboard re-POSTs on edit: each entry is
+    /// <c>{ name, color (#RRGGBB), maps[] }</c>. Sanitized + capped; a malformed entry is skipped.</summary>
+    private static bool TryParseAtlasGroups(JsonElement el, out List<AtlasMapGroup> groups)
+    {
+        groups = new List<AtlasMapGroup>();
+        try
+        {
+            foreach (var g in el.EnumerateArray())
+            {
+                if (g.ValueKind != JsonValueKind.Object) continue;
+                var name = g.TryGetProperty("name", out var nv) && nv.ValueKind == JsonValueKind.String ? (nv.GetString() ?? "").Trim() : "";
+                if (name.Length > 64) name = name[..64];
+                var color = g.TryGetProperty("color", out var cv) && cv.ValueKind == JsonValueKind.String ? (cv.GetString() ?? "") : "";
+                if (!HexColor.IsMatch(color)) color = "#E0B341";
+                var maps = new List<string>();
+                if (g.TryGetProperty("maps", out var mv) && mv.ValueKind == JsonValueKind.Array)
+                    foreach (var m in mv.EnumerateArray())
+                        if (m.ValueKind == JsonValueKind.String && m.GetString() is { Length: > 0 } ms && maps.Count < 200)
+                            maps.Add(ms.Trim());
+                groups.Add(new AtlasMapGroup { Name = name, Color = color.ToUpperInvariant(), Maps = maps });
+                if (groups.Count >= 64) break;
+            }
+            return true;
+        }
+        catch { return false; }
+    }
 
     /// <summary>Deserialize + sanitize a full <see cref="RadarStyles"/> from posted JSON. Returns false
     /// (and leaves settings untouched) if the JSON can't be parsed.</summary>
@@ -691,6 +750,22 @@ public sealed class ApiServer : IDisposable
             parsed.Categories = (parsed.Categories ?? new())
                 .Where(c => !string.IsNullOrWhiteSpace(c)).Distinct(StringComparer.OrdinalIgnoreCase).Take(32).ToList();
             g = parsed;
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    /// <summary>Deserialize + sanitize a full <see cref="CurrencyExchangeSettings"/> from posted JSON.
+    /// Mirrors <see cref="TryParseGroundItems"/>. Returns false (settings untouched) on a parse failure.</summary>
+    private static bool TryParseCurrencyExchange(JsonElement el, out CurrencyExchangeSettings c)
+    {
+        c = new CurrencyExchangeSettings();
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<CurrencyExchangeSettings>(el.GetRawText(), Json);
+            if (parsed == null) return false;
+            parsed.MaxRows = Math.Clamp(parsed.MaxRows, 1, 64);
+            c = parsed;
             return true;
         }
         catch (JsonException) { return false; }
@@ -957,7 +1032,14 @@ public sealed record RadarState(
     // served to the dashboard's Monolith Rewards card. Empty when none / feature disabled.
     IReadOnlyList<MonolithMarker>? Monoliths = null,
     // Measured effective render FPS (rolling window) — for verifying the overlay actually hits FpsCap.
-    float Fps = 0)
+    float Fps = 0,
+    // Currency-exchange live order book (when the exchange panel is open): per-side ladder rows + summary.
+    bool ExchangeOpen = false,
+    string ExchangeSummary = "",
+    IReadOnlyList<ExchangeRow>? ExchangeOffered = null,
+    IReadOnlyList<ExchangeRow>? ExchangeWanted = null,
+    int ExchangeHaveQty = 0,
+    string ExchangeFillNote = "")
 {
     public static readonly RadarState Empty =
         new(false, 0, 0, false, 0, System.Numerics.Vector2.Zero,

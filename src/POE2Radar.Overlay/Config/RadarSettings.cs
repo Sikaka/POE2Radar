@@ -89,6 +89,10 @@ public sealed class RadarSettings
     // Seeded-defaults guard: false until the atlas rules have been initialized once (either by seeding
     // the Citadel defaults when nodes are first read, or by any dashboard edit). Stops re-seeding.
     public bool AtlasRulesInitialized { get; set; }
+    // Separate guard for the built-in "Map Targets" preset (#6). Distinct from AtlasRulesInitialized so the
+    // preset seeds ONCE even on a config from before the preset existed (where RulesInitialized was already
+    // true). The seed is ADDITIVE — it only adds the built-in target names/colours, never clears user rules.
+    public bool AtlasTargetsSeeded { get; set; }
     // DEBUG: draw EVERY atlas node (overriding the highlight-only rule) — for offset/coverage diagnostics.
     // Off by default: normally only nodes matching AtlasHighlightTags (or manually selected) are drawn.
     public bool AtlasDrawAll { get; set; } = false;
@@ -104,6 +108,24 @@ public sealed class RadarSettings
     public int AtlasAutoRouteMaxHops { get; set; } = 0;
     // Draw a biome-coloured border around tracked map labels on the open Atlas (richer in-game info). On by default.
     public bool AtlasShowBiomeBorder { get; set; } = true;
+    // Declutter filters (#3): suppress drawing rings/icons/routes on maps in these states. Completed maps
+    // are hidden by default (you've run them); accessible-now maps stay visible. F10 route endpoints are
+    // always drawn regardless. We already skip routing to completed maps.
+    public bool AtlasHideCompleted { get; set; } = true;
+    public bool AtlasHideAccessible { get; set; } = false;
+    // On-node content icons (#5): draw the in-game content art (Breach/Boss/Essence/…) above tracked maps
+    // and above FOGGED/off-screen maps the game isn't drawing icons for (never on already-visible nodes —
+    // the game draws those itself). On by default. Size is the icon height in px before any scaling.
+    public bool AtlasShowContentIcons { get; set; } = true;
+    public float AtlasContentIconSize { get; set; } = 26f;
+    // Route chevron spacing (#4): gap between the directional arrowheads drawn along a route, as a multiple
+    // of the chevron size (higher = more spread out). Mirrors the GameHelper2 Atlas plugin's RouteArrowSpacing.
+    public float AtlasRouteArrowSpacing { get; set; } = 8f;
+    // Map colour groups (#7): named sets of map display names → one ring/label colour, so a whole category
+    // (Citadels, Halls, Uniques, Expedition) recolours together. Seeded with sensible defaults once
+    // (AtlasGroupsSeeded). A node in a group draws in the group colour when it has no per-rule colour.
+    public List<AtlasMapGroup> AtlasGroups { get; set; } = new();
+    public bool AtlasGroupsSeeded { get; set; }
 
     // One-time guard: false until the default "Abyss Lightless (Void)" monster display rule has been
     // seeded into display_rules.json. Set true after seeding so a user who deletes the rule keeps it gone.
@@ -169,6 +191,10 @@ public sealed class RadarSettings
 
     // ── Runeshape-monolith reward overlay: value-coloured map icon + N badge + nearby reward panel. ──
     public MonolithSettings Monoliths { get; set; } = new();
+
+    // ── Currency Exchange (Kalguur market) order-book depth overlay: top-right panel with the best
+    //    offered/wanted ratios + depth. Mirrors the GroundItems/Monoliths settings pattern. ──
+    public CurrencyExchangeSettings CurrencyExchange { get; set; } = new();
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -290,6 +316,18 @@ public sealed class RadarSettings
 }
 
 /// <summary>
+/// A named Atlas colour group (#7): a set of map display names that all draw in one ring/label colour,
+/// so a whole category (Citadels, Halls, Uniques, Expedition) recolours together. Adopted from the
+/// GameHelper2 Atlas plugin's Map Styles. <see cref="Color"/> is <c>#RRGGBB</c>.
+/// </summary>
+public sealed class AtlasMapGroup
+{
+    public string Name { get; set; } = "";
+    public string Color { get; set; } = "#e0b341";
+    public List<string> Maps { get; set; } = new();
+}
+
+/// <summary>
 /// A single drawable radar icon: shape, RGB color, opacity, pixel size, and an enable toggle.
 /// <see cref="Shape"/> is one of Circle/Triangle/Star/Diamond/Plus/Square (anything else falls back
 /// to Circle when rendered); <see cref="Color"/> is <c>#RRGGBB</c>; <see cref="Opacity"/> is 0..1.
@@ -397,6 +435,18 @@ public sealed class MonolithSettings
     public bool PanelCollapsed { get; set; } = false;    // panel shrunk to its title bar (click the header to toggle)
     public bool ShowMapLabel { get; set; } = true;       // draw the value + top-reward label at the icon
     public float PanelMaxDistance { get; set; } = 0f;    // 0 = every monolith in the area; else only within N grid
+}
+
+/// <summary>
+/// Currency Exchange (Kalguur market) order-book overlay: when the exchange panel is open, draws a
+/// top-right depth panel listing the best offered + wanted ratios and stock. <see cref="MaxRows"/> caps
+/// how many ladder rows each side shows. Mirrors <see cref="GroundItemSettings"/>/<see cref="MonolithSettings"/>.
+/// </summary>
+public sealed class CurrencyExchangeSettings
+{
+    public bool Enabled { get; set; } = true;
+    public int MaxRows { get; set; } = 8;        // how many ladder rows to draw per side
+    public bool Collapsed { get; set; } = false; // card shrunk to a small "expand" tab (click to toggle)
 }
 
 public sealed class GroundItemSettings

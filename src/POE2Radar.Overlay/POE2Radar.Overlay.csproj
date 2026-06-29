@@ -12,7 +12,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- App version — bump per release and tag the repo to match (vX.Y.Z). UpdateChecker compares this
          to the latest GitHub release/tag so the user is told when they're out of date. -->
-    <Version>0.15.3</Version>
+    <Version>0.16.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,10 +21,13 @@
 
   <ItemGroup>
     <PackageReference Include="Vortice.Direct2D1" Version="3.*" />
+    <!-- WIC bindings (Vortice.WIC namespace) ship inside Vortice.Direct2D1 — no separate package. -->
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Web\default_watched.json" />
+    <!-- Atlas content icons (#5): in-game content art drawn above fogged/tracked map nodes. -->
+    <EmbeddedResource Include="Assets\AtlasIcons\*.png" />
   </ItemGroup>
 
 </Project>

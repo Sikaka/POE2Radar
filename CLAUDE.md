@@ -132,5 +132,17 @@ is rescaled by liveZoom/calibZoom each frame. See `resources/atlas-research-note
   UTF-16 internal mod id); Stack count `+0x18`; RenderItem art `+0x28`.
 - **Still TBD:** camera world→screen matrix (for world-space nameplates); friendly area Name string.
 
+## Releasing
+
+**The GitHub release build is triggered ONLY by pushing a `v*` tag** — NOT by pushing to `main`
+(`.github/workflows/release.yml`: `on: push: tags: ["v*"]`). A version bump + commit + push to `main`
+will NOT build or publish anything on its own. To cut a release:
+1. Bump `<Version>` in `src/POE2Radar.Overlay/POE2Radar.Overlay.csproj` and commit.
+2. Push the branch, then create a **lightweight** tag matching the version and push it:
+   `git tag v0.15.3 && git push origin v0.15.3` (lightweight = points straight at the commit, the
+   existing convention; the workflow re-derives the baked-in `Version` from the tag name).
+The workflow publishes a self-contained single-file win-x64 exe, zips it, and creates/updates the
+GitHub Release. **Don't push a release tag unless asked** — tagging is what ships a build to users.
+
 ## Dependencies
 - `Vortice.Direct2D1` (overlay rendering). Targets `net10.0-windows`, x64.

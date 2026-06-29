@@ -509,6 +509,59 @@ public static class Poe2
         public const int NameWString = 0x390;  // visible row's kid[0]: inline std::wstring "<count>x <name>"
     }
 
+    /// <summary>The world Entity currently under the cursor — monsters, NPCs, doodads, ground items
+    /// included; <c>0</c> when nothing (or only UI) is hovered. A 3-hop pointer chain off InGameState
+    /// (community, documented for v0.5.4): <c>host = *(InGameState + <see cref="HostFromInGameState"/>)</c>
+    /// → <c>sub = *(host + <see cref="SubFromHost"/>)</c> → <c>entity = *(sub + <see cref="EntityFromSub"/>)</c>.
+    /// Verified live 2026-06-29 (Research <c>--mouseover --hunt</c>: of 504 candidate offset combos this was
+    /// the ONLY one whose resolved entity tracks the cursor) — still correct post-2026-06-25 patch (no shift).
+    /// Cheap ground-truth for "what is the user pointing at", invaluable for mapping entities/elements.</summary>
+    public static class MouseOver
+    {
+        public const int HostFromInGameState = 0x300; // ✓ → host object
+        public const int SubFromHost         = 0x3F0; // ✓ → sub object
+        public const int EntityFromSub       = 0xA8;  // ✓ → hovered Entity (0 when nothing/UI hovered)
+    }
+
+    /// <summary>The Currency Exchange panel (Kalguur market). The panel is a UI element — a direct child of
+    /// GameUi (<c>InGameState+0x2F0</c>) — holding TWO inline <c>std::vector</c> headers (begin/end/cap) that
+    /// each point to a heap array of stock entries. Cross-referenced 1:1 from the PoE1 ExileApi
+    /// <c>CurrencyExchangePanel</c> (PoE1 offsets 0x430/0x448; PoE2 shifted to 0x478/0x490) and validated live
+    /// 2026-06-29 (Research <c>--exchange-panel3</c>): Exalted-want/Chaos-have @ 50:1 → offered[0] Get=50 Give=1.
+    /// The panel is resolved STRUCTURALLY (scan GameUi's visible children for one with valid stock vectors at
+    /// both offsets) rather than by index — self-healing across patches. Stock vectors update their begin/end
+    /// in place as orders fill, so read them LIVE. See <see cref="Poe2CurrencyExchange"/>.</summary>
+    public static class CurrencyExchange
+    {
+        public const int WantedStockVec  = 0x478; // ✓ StdVector<StockEntry> — the "I Want" side
+        public const int OfferedStockVec = 0x490; // ✓ StdVector<StockEntry> — the "I Have" / offered side
+        // StockEntry (stride 0x10): the ratio is Get/Give (derived, not stored). Last entry {0,0,n} = "< rest".
+        public const int EntryStride      = 0x10;
+        public const int EntryGet         = 0x0; // u16 — amount received
+        public const int EntryGive        = 0x2; // u16 — amount given
+        public const int EntryListedCount = 0x8; // i32 — listed stock at this order/bucket
+        // The "I Have" quantity the user is selling = the Text of the panel's Nth direct child (the count
+        // input). ✓ live 2026-06-29 (Research --exchange-qty --have 1689 → panel.Children[8].Text="1689").
+        public const int HaveQtyChildIndex = 8;
+    }
+
+    /// <summary>The world-anchored "items on the ground" label layer (the <c>ItemsOnGroundLabelElement</c>
+    /// in ExileApi terms). Its CHILDREN are the per-item loot tags (one text element per on-ground item);
+    /// a tag's first line of <see cref="UiElement.Text"/> IS the item name (the PriceBook key). Located by
+    /// the same FLAGS-FINGERPRINT walk-with-backtracking as <see cref="Runeforge"/> (child indices drift
+    /// per patch, the Flags "role" bits don't): from GameUi (<c>InGameState+0x2F0</c>) descend
+    /// child{<see cref="ContainerFlagFingerprints"/>[0]} → child[0]{[1]} → child[0]{[2]} = the container.
+    /// The visible bit (0x800) is masked on both sides of every compare. Confining the loot-tag scan to
+    /// THIS subtree (instead of the whole UI tree) is what stops value chips landing on unrelated UI panels
+    /// whose text happens to match a priced item name. Validated live 2026-06-29 (Research <c>--lootstruct</c>
+    /// / <c>--lootmap</c>); re-fingerprint per patch if it stops resolving.</summary>
+    public static class GroundLabels
+    {
+        // GameUi → [overlay layer] → [sub-layer] → [labels container]. (visible bit masked before compare.)
+        public static readonly uint[] ContainerFlagFingerprints =
+            { 0x00542EF3, 0x00402EF3, 0x00502EF1 };
+    }
+
     /// <summary>Ritual tribute-shop reward grid. The reward TILES are item-slot UiElements (same "ItemFrame"
     /// element type as the flask bar): each holds its reward item Entity at <see cref="TileSlotItem"/>. The
     /// grid is found by walking up from a shop-signature text element to the ancestor whose child is a

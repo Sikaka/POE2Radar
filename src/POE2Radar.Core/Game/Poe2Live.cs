@@ -1195,28 +1195,30 @@ public sealed class Poe2Live
         return n is > 0 and <= 4000;
     }
 
-    /// <summary>BFS the in-game UI tree (from <see cref="Poe2Offsets.InGameState.UiRoot"/>) for VISIBLE,
-    /// text-bearing elements and return each one's address + the FIRST LINE of its text. Invisible subtrees
-    /// are PRUNED (the game won't render their children either), so the walk stays cheap — typically a few
-    /// hundred visible nodes rather than the whole tree. The caller matches each first line to a priced item
-    /// by NAME — a loot tag's text IS the item name, so no item-entity link is needed — and reads the live
-    /// rect via <see cref="TryUiElementRect"/>. Empty when not in game. Bounded by <paramref name="maxNodes"/>.
-    /// Allocates a fresh list/queue/set per call → meant to run THROTTLED on the world thread, not per frame.</summary>
+    /// <summary>BFS the world-anchored ground-label layer (the <c>ItemsOnGroundLabelElement</c>, resolved by
+    /// <see cref="ResolveGroundLabelContainer"/>) for VISIBLE, text-bearing elements and return each one's
+    /// address + the FIRST LINE of its text. <b>Scoped to that container's subtree</b> — NOT the whole UI
+    /// tree — so a value chip can only land on a real on-ground loot tag, never on an unrelated panel
+    /// (stash/vendor/reward) whose text happens to match a priced item name. Invisible subtrees are PRUNED.
+    /// The caller matches each first line to a priced item by NAME (a loot tag's text IS the item name, so no
+    /// item-entity link is needed) and reads the live rect via <see cref="TryUiElementRect"/>. Empty when not
+    /// in game or no items are on the ground. Bounded by <paramref name="maxNodes"/>. Allocates a fresh
+    /// list/queue/set per call → meant to run THROTTLED on the world thread, not per frame.</summary>
     public List<(nint El, string Text)> ScanLootLabels(nint inGameState, int maxNodes = 20000)
     {
         var result = new List<(nint, string)>();
-        var uiRoot = Ptr(inGameState + Poe2.InGameState.UiRoot);
-        if (uiRoot == 0) return result;
+        var container = ResolveGroundLabelContainer(inGameState);
+        if (container == 0) return result;
         const uint visBit = 1u << Poe2.UiElement.FlagVisibleBit;
 
-        var queue = new Queue<nint>(); queue.Enqueue(uiRoot);
+        var queue = new Queue<nint>(); queue.Enqueue(container);
         var visited = new HashSet<nint>();
         while (queue.Count > 0 && visited.Count < maxNodes)
         {
             var el = queue.Dequeue();
             if (el == 0 || !visited.Add(el)) continue;
             var visible = _reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var flags) && (flags & visBit) != 0;
-            if (!visible && el != uiRoot) continue;   // prune the invisible subtree (root always descended)
+            if (!visible && el != container) continue;   // prune the invisible subtree (container always descended)
 
             var first = Ptr(el + Poe2.UiElement.Children);
             if (first != 0 && _reader.TryReadStruct<nint>(el + Poe2.UiElement.ChildrenEnd, out var last))
@@ -1233,6 +1235,52 @@ public sealed class Poe2Live
             if (firstLine.Length >= 2) result.Add((el, firstLine));
         }
         return result;
+    }
+
+    /// <summary>The world Entity currently under the cursor (monsters/NPCs/doodads/ground items included), or
+    /// 0 when nothing — or only UI — is hovered. Resolves the community hover chain off InGameState (three
+    /// pointer hops, see <see cref="Poe2Offsets.MouseOver"/>); validated live 2026-06-29. Cheap enough for the
+    /// render loop. Pair with <see cref="ReadItemIdentity"/> / component reads to identify whatever's hovered.</summary>
+    public nint MouseOverEntity(nint inGameState)
+    {
+        if (inGameState == 0) return 0;
+        var host = Ptr(inGameState + Poe2.MouseOver.HostFromInGameState);
+        if (host == 0) return 0;
+        var sub = Ptr(host + Poe2.MouseOver.SubFromHost);
+        if (sub == 0) return 0;
+        return Ptr(sub + Poe2.MouseOver.EntityFromSub);
+    }
+
+    /// <summary>Resolve the world-anchored ground-label container (the <c>ItemsOnGroundLabelElement</c>) by a
+    /// FLAGS-FINGERPRINT walk with backtracking from GameUi (<c>InGameState+0x2F0</c>), mirroring
+    /// <see cref="Poe2Runeforge"/>'s panel resolution — child indices drift per patch, the Flags "role" bits
+    /// don't, so each hop matches <c>(flags &amp; ~visibleBit) == fingerprint</c> and keeps whichever branch
+    /// bottoms out at the labels container. The container persists per area but its children populate/empty
+    /// as items drop/are looted, so a fresh walk every (throttled) scan self-heals. Returns 0 when the path
+    /// can't be matched (not in game / layout changed). See <see cref="Poe2Offsets.GroundLabels"/>.</summary>
+    public nint ResolveGroundLabelContainer(nint inGameState)
+    {
+        var gameUi = Ptr(inGameState + Poe2.InGameState.UiRoot);
+        return gameUi == 0 ? 0 : WalkGroundLabels(gameUi, 0);
+    }
+
+    private nint WalkGroundLabels(nint parent, int step)
+    {
+        var fps = Poe2.GroundLabels.ContainerFlagFingerprints;
+        const uint visibleMask = 1u << Poe2.UiElement.FlagVisibleBit;
+        if (step == fps.Length) return parent;             // matched the full fingerprint path → container
+        if (!ChildSpan(parent, out var first, out var n)) return 0;
+        var target = fps[step] & ~visibleMask;
+        for (long i = 0; i < n; i++)
+        {
+            var child = Ptr(first + (nint)(i * 8));
+            if (child == 0) continue;
+            if (!_reader.TryReadStruct<uint>(child + Poe2.UiElement.Flags, out var flags)) continue;
+            if ((flags & ~visibleMask) != target) continue;
+            var deeper = WalkGroundLabels(child, step + 1);
+            if (deeper != 0) return deeper;
+        }
+        return 0;
     }
 
     // ── internals ───────────────────────────────────────────────────────────
