@@ -79,7 +79,7 @@ public readonly record struct LootTagLabel(float X, float Y, float W, float H, s
 /// cref="H"/> is the game tooltip's content box; the renderer draws a single-line styled bar aligned to its
 /// width, just below its bottom edge (snapping above the top when near the screen bottom). <see cref="Text"/>
 /// is the value (stacks include the "(N × unit)" breakdown). Border/emphasis when <see cref="Highlight"/>.</summary>
-public readonly record struct HoverPriceLabel(float X, float Y, float W, float H, string Text, bool Highlight);
+public readonly record struct HoverPriceLabel(float X, float Y, float W, float H, string Text, string Sub, bool Highlight);
 
 /// <summary>One row of the Currency Exchange order-book ladder, aggregated at world rate in RadarApp.
 /// <see cref="Ratio"/> is Get/Give for the row; <see cref="Stock"/> is its listed count; <see cref="CumStock"/>

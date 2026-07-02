@@ -117,10 +117,11 @@ public sealed class RadarApp : IDisposable
     private readonly List<LootTagLabel> _lootTagFrame = new();   // render-thread scratch (rebuilt per frame)
 
     // ── Hover price: the item under the cursor in an item UI (inventory/stash/vendor). Scanned at world
-    //    rate (cursor-in-rect walk → +0x4F8 item → price + tooltip content box), published as a spec the
-    //    render thread draws as a value bar aligned to the tooltip's width, just below it. ──
+    //    rate (cursor-in-rect walk → +0x4F8 item → price + the item SLOT rect), published as a spec the
+    //    render thread draws as a value chip anchored to the item icon. Stacks get two lines: the stack
+    //    TOTAL (Text) and the per-unit breakdown (Sub); Sub is empty for singles. ──
     private readonly record struct HoverPriceSpec(float BoxX, float BoxY, float BoxW, float BoxH,
-        string Text, bool Highlight);
+        string Text, string Sub, bool Highlight);
     private sealed record HoverPriceRender(HoverPriceSpec Spec);  // reference wrapper (nullable struct can't be volatile)
     private volatile HoverPriceRender? _hoverPrice;               // null = nothing priced under the cursor
     private DateTime _nextHoverScanUtc = DateTime.MinValue;
@@ -946,11 +947,14 @@ public sealed class RadarApp : IDisposable
             // count-stripped name. Uniques are indexed by name too, so identified-unique tags resolve here.
             var pr = _priceBook.TryByName(text) ?? _priceBook.TryByName(StripCount(text));
             if (pr is not { } p) continue;
-            if (cfg.MinQuantity > 0 && p.Quantity > 0 && p.Quantity < cfg.MinQuantity) continue; // see BuildItemLabels: 0 = no volume data, not low confidence
             var group = CategoryGroup(p.Category);
             if (!enabled.Contains(group)) continue;          // category group toggled off
             if (p.Exalted < GroundFloor(group)) continue;    // below this bucket's value floor
-            specs.Add(new LootTagSpec(el, text, _priceBook.Format(p.Exalted), p.Exalted >= cfg.HighlightMinEx));
+            // Low-listing confidence: a price backed by fewer than MinQuantity live listings is flagged
+            // with a "?" rather than hidden (0 volume = no data, not low confidence — see LowConfidence).
+            var value = _priceBook.Format(p.Exalted);
+            if (LowConfidence(p.Quantity)) value += " ?";
+            specs.Add(new LootTagSpec(el, text, value, p.Exalted >= cfg.HighlightMinEx));
         }
         _lootTags = specs.Count > 0 ? new LootTagRender(specs) : LootTagRender.Empty;
     }
@@ -984,15 +988,17 @@ public sealed class RadarApp : IDisposable
                           : (h.Name is { Length: > 0 } nm ? _priceBook.TryByName(nm) : null);
         if (pr is not { } p) { _hoverPrice = null; return; }
 
-        // One line (tooltips are wide): stacks show total + the per-unit breakdown; singles just the value.
+        // Anchored to the item icon (small slot), so keep it to two short lines: the headline stack TOTAL,
+        // and a per-unit breakdown beneath it for stacks (empty for singles). Both stay narrow so they line up.
         var stack = h.Stack > 1 ? h.Stack : 1;
-        var text = stack > 1
-            ? $"{_priceBook.Format(p.Exalted * stack)}   ({stack} × {_priceBook.Format(p.Exalted)})"
-            : _priceBook.Format(p.Exalted);
+        var text = _priceBook.Format(p.Exalted * stack);
+        var sub = stack > 1 ? $"{stack} × {_priceBook.Format(p.Exalted)}" : "";
+        // Same low-listing "?" confidence flag as the ground overlay (shared MinQuantity threshold).
+        if (LowConfidence(p.Quantity)) text += " ?";
         var highlight = p.Exalted * stack >= cfg.HighlightMinEx;
 
         _hoverPrice = new HoverPriceRender(new HoverPriceSpec(
-            h.BoxX, h.BoxY, h.BoxW, h.BoxH, text, highlight));
+            h.BoxX, h.BoxY, h.BoxW, h.BoxH, text, sub, highlight));
     }
 
     /// <summary>Strip a leading "&lt;count&gt;x " from a stack tag ("5x Chaos Orb" → "Chaos Orb") so the name
@@ -1135,7 +1141,7 @@ public sealed class RadarApp : IDisposable
             // Hover price bar: the world scan resolved the tooltip's content box (aligned + placed by the
             // renderer). Box positions are static while a tooltip is up, so no per-frame re-read is needed.
             _hoverFrame = _hoverPrice is { Spec: var hs }
-                ? new HoverPriceLabel(hs.BoxX, hs.BoxY, hs.BoxW, hs.BoxH, hs.Text, hs.Highlight)
+                ? new HoverPriceLabel(hs.BoxX, hs.BoxY, hs.BoxW, hs.BoxH, hs.Text, hs.Sub, hs.Highlight)
                 : null;
 
             // Atlas marks/routes: re-read each node's live RelativePos this frame so the rings + route lines
@@ -1605,11 +1611,6 @@ public sealed class RadarApp : IDisposable
                 ? _priceBook.TryByArt(e.ItemArt)
                 : (e.ItemName is { Length: > 0 } nm ? _priceBook.TryByName(nm) : null);
             if (lookup is not { } pr) continue;
-            // Confidence gate: reject a listing whose volume is present but below the floor. poe.ninja's
-            // exchange endpoint reports volume=0 for many legitimately-priced fungibles (most runes), so a
-            // 0 means "no volume data", NOT low confidence — trust its derived price. Only qty in [1,Min) is
-            // the mislisting signal (e.g. a 1-listing unique priced sky-high).
-            if (cfg.MinQuantity > 0 && pr.Quantity > 0 && pr.Quantity < cfg.MinQuantity) continue;
             var group = CategoryGroup(pr.Category);
             if (!enabled.Contains(group)) continue;                 // category group toggled off
             if (pr.Exalted < GroundFloor(group)) continue;          // below this bucket's value floor (Unique/Currency/Other)
@@ -1617,7 +1618,11 @@ public sealed class RadarApp : IDisposable
             // Reveal the NAME only for an UNIDENTIFIED unique (the game's tag hides it). Everything else —
             // identified uniques, currency, runes, essences, … — draws a value-only chip over the drop.
             var showName = isUnique && !e.ItemIdentified;
-            labels.Add(new ItemLabelSpec(render, pr.Name, _priceBook.Format(pr.Exalted), pr.Exalted >= cfg.HighlightMinEx, ShowName: showName));
+            // Low-listing confidence: flag a price backed by a positive-but-sub-threshold listing count
+            // with a "?" rather than hiding it (see LowConfidence — 0 volume = no data, still trusted).
+            var value = _priceBook.Format(pr.Exalted);
+            if (LowConfidence(pr.Quantity)) value += " ?";
+            labels.Add(new ItemLabelSpec(render, pr.Name, value, pr.Exalted >= cfg.HighlightMinEx, ShowName: showName));
         }
         return labels;
     }
@@ -1657,6 +1662,17 @@ public sealed class RadarApp : IDisposable
         "Currency" => _settings.GroundItems.CurrencyMinEx,
         _          => _settings.GroundItems.OtherMinEx,
     };
+
+    /// <summary>True when a PriceBook listing is backed by a positive-but-sub-threshold live-listing count
+    /// (<see cref="GroundItemSettings.MinQuantity"/>) — the low-confidence signal the overlay flags with a
+    /// "?" suffix on the value. poe.ninja reports volume=0 for many legitimately-priced fungibles (most
+    /// runes), so 0 means "no volume data", NOT low confidence — it's trusted. Only qty in [1,Min) flags.
+    /// The threshold lives on GroundItems as the shared pricing-confidence setting (ground + hover).</summary>
+    private bool LowConfidence(int quantity)
+    {
+        var min = _settings.GroundItems.MinQuantity;
+        return min > 0 && quantity > 0 && quantity < min;
+    }
 
     /// <summary>Parse a "#RRGGBB" hex colour to packed 0xFFRRGGBB once (opacity = 1, matching the old
     /// per-frame ParseColor(hex, 1f) for HP bars). Falls back to opaque white on a malformed string.</summary>

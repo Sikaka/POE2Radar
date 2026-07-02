@@ -401,6 +401,7 @@ internal static class DashboardHtml
         <button class="tab on" data-tab="filters">Rules</button>
         <button class="tab" data-tab="landmarks">Landmarks</button>
         <button class="tab" data-tab="atlas">Atlas</button>
+        <button class="tab" data-tab="value">Item Value</button>
         <button class="tab" data-tab="settings">Settings</button>
       </div>
 
@@ -622,9 +623,27 @@ internal static class DashboardHtml
               <input class="numin" type="number" step="100" min="0" data-set="manaCooldownMs"></div>
             <div class="row"><div class="rl hint-row">F8 toggles auto-flask in-game. Status: <span id="flaskState">&mdash;</span></div></div>
           </div>
+        </div>
+        <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsg">&#10003; saved to config</span></div>
+      </section>
+
+      <section class="view" data-view="value" hidden>
+        <div class="panel-grid">
+          <!-- Shared pricing config: applies to BOTH the ground overlay and the hover chip. -->
+          <div class="card" style="grid-column:1/-1">
+            <h3>General Pricing <span class="tag">&middot; poe.ninja</span></h3>
+            <div class="row"><div class="rl hint-row">These apply to <b>everything priced</b> below &mdash; ground loot, hover, monolith &amp; ritual rewards. Prices come from poe.ninja for the detected league.</div></div>
+            <div class="row"><div class="rl">Price league<small>leave blank to auto-detect your league (HC/SC/Standard) from the game</small></div>
+              <input class="numin" type="text" id="giLeague" data-gi="league" placeholder="auto-detect" style="width:200px"></div>
+            <div class="row"><div class="rl">Low-listing warning<small>flag a price backed by fewer than N live listings with a &ldquo;?&rdquo; (possible mislisting). 0 = never flag</small></div>
+              <input class="numin" type="number" step="1" min="0" data-gi="minQuantity"></div>
+            <div class="row"><div class="rl hint-row">Pricing status: <span id="priceStatus" style="color:var(--ink-dim)">&mdash;</span></div></div>
+          </div>
+
+          <!-- Ground loot value labels. -->
           <div class="card">
-            <h3>Ground Item Pricing <span class="tag">&middot; poe.ninja</span></h3>
-            <div class="row"><div class="rl">Enabled<small>draw value labels over dropped items</small></div>
+            <h3>Ground Loot</h3>
+            <div class="row"><div class="rl">Show ground loot value<small>draw a value label over dropped items on the map</small></div>
               <label class="sw"><input type="checkbox" data-gi="enabled"><span class="track"></span><span class="knob"></span></label></div>
             <div class="row"><div class="rl hint-row">Show a label for these categories:</div></div>
             <div class="chips" id="giCats">
@@ -643,7 +662,7 @@ internal static class DashboardHtml
               <span class="chip" data-gicat="Breach">Breach</span>
               <span class="chip" data-gicat="Expedition">Expedition</span>
             </div>
-            <div class="row"><div class="rl hint-row">Minimum value to show, per bucket (Ex):</div></div>
+            <div class="row"><div class="rl hint-row">Minimum value to show, per bucket (Ex) &mdash; drops below the floor are hidden:</div></div>
             <div class="row"><div class="rl">Uniques min<small>hide uniques under this (Ex)</small></div>
               <input class="numin" type="number" step="0.1" min="0" data-gi="uniqueMinEx"></div>
             <div class="row"><div class="rl">Currency min<small>hide currency under this (Ex)</small></div>
@@ -652,12 +671,20 @@ internal static class DashboardHtml
               <input class="numin" type="number" step="0.1" min="0" data-gi="otherMinEx"></div>
             <div class="row"><div class="rl">Highlight threshold<small>border/emphasis at or above this value (Ex)</small></div>
               <input class="numin" type="number" step="1" min="0" data-gi="highlightMinEx"></div>
-            <div class="row"><div class="rl">Min listing quantity<small>skip low-confidence mislistings</small></div>
-              <input class="numin" type="number" step="1" min="0" data-gi="minQuantity"></div>
-            <div class="row"><div class="rl">League<small>blank = auto-detect from game (HC/SC)</small></div>
-              <input class="numin" type="text" data-gi="league" style="width:150px"></div>
             <div class="row"><div class="rl hint-row">Unidentified uniques reveal their NAME + value; everything else (identified uniques, currency, runes, essences, …) shows the value only.</div></div>
           </div>
+
+          <!-- Hover price chip (any item UI). -->
+          <div class="card">
+            <h3>On Hover</h3>
+            <div class="row"><div class="rl">Show item value on hover<small>a price chip beside the game tooltip in inventory / stash / vendor / reward UIs</small></div>
+              <label class="sw"><input type="checkbox" data-hv="enabled"><span class="track"></span><span class="knob"></span></label></div>
+            <div class="row"><div class="rl">Highlight threshold<small>emphasize the chip at or above this (stack) value (Ex)</small></div>
+              <input class="numin" type="number" step="1" min="0" data-hv="highlightMinEx"></div>
+            <div class="row"><div class="rl hint-row">Hovering is explicit intent, so this ignores the ground category toggles &amp; value floors &mdash; any priced item shows. Stacks show the per-unit price and the stack total.</div></div>
+          </div>
+
+          <!-- Monolith (expedition) reward overlay — a value/pricing feature, grouped here. -->
           <div class="card">
             <h3>Monolith Rewards <span class="tag">&middot; expedition</span></h3>
             <div class="row"><div class="rl">Enabled<small>read + price runeshape-monolith rewards</small></div>
@@ -673,6 +700,8 @@ internal static class DashboardHtml
             <div class="row"><div class="rl">Show map label<small>draw value + top reward at the icon</small></div>
               <label class="sw"><input type="checkbox" data-mono="showMapLabel"><span class="track"></span><span class="knob"></span></label></div>
           </div>
+
+          <!-- Currency Exchange depth panel — value/pricing feature, grouped here. -->
           <div class="card">
             <h3>Currency Exchange <span class="tag">&middot; Kalguur market</span></h3>
             <div class="row"><div class="rl">Enabled<small>show the order-book depth panel when the exchange is open</small></div>
@@ -682,7 +711,7 @@ internal static class DashboardHtml
             <div class="row"><div class="rl hint-row">When the in-game Currency Exchange is open, a top-right panel lists the best offered/wanted ratios + depth (the best row of each side is highlighted).</div></div>
           </div>
         </div>
-        <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsg">&#10003; saved to config</span></div>
+        <div style="margin-top:18px; height:14px"><span class="saved" id="savedMsg2">&#10003; saved to config</span></div>
       </section>
 
     </main>
@@ -702,6 +731,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   $$('.tab').forEach(x=>x.classList.toggle('on',x===t));
   $$('.view').forEach(v=>v.hidden = v.dataset.view!==activeTab);
   if(activeTab==='settings') loadSettings();
+  if(activeTab==='value'){ loadSettings(); pollPrices(); }
   if(activeTab==='filters') loadFilters();
   if(activeTab==='landmarks') loadLandmarks();
   if(activeTab==='atlas'){ if(!atlasData) loadAtlas(); else renderAtlas(); }
@@ -717,6 +747,7 @@ async function tick(){
     setConn(true);
     try{ zone = await getJSON('/api/zone'); }catch(e){ zone=null; }
     renderState();
+    if(activeTab==='value') pollPrices();   // keep the league/status live (prices load a few s after launch)
   }catch(e){ setConn(false); }
 }
 
@@ -733,9 +764,10 @@ async function loadSettings(){
     hpBars = s.hpBars || null;
     terrain = s.terrain || null;
     gi = s.groundItems || {};
+    hover = s.hoverPrice || {};
     mono = s.monoliths || {};
     ce = s.currencyExchange || {};
-    renderHpBars(); renderTerrain(); renderGround(); renderMono(); renderExchange();
+    renderHpBars(); renderTerrain(); renderGround(); renderHover(); renderMono(); renderExchange();
   }catch(e){}
 }
 
@@ -765,6 +797,39 @@ function wireGround(){
     gi.categories=$$('#giCats .chip.on').map(x=>x.dataset.gicat);
     saveGround();
   });
+}
+/* ── hover price chip (nested object: POST the whole {hoverPrice}) ── */
+let hover = null;
+function renderHover(){
+  if(!hover) return;
+  $$('[data-hv]').forEach(el=>{
+    const k=el.dataset.hv;
+    if(el.type==='checkbox') el.checked=!!hover[k];
+    else if(hover[k]!==undefined && hover[k]!==null) el.value=hover[k];
+  });
+}
+function saveHover(){ if(hover) saveSetting('hoverPrice', hover); }
+function wireHover(){
+  $$('[data-hv]').forEach(el=>{
+    const k=el.dataset.hv;
+    if(el.type==='checkbox') el.onchange=()=>{ hover=hover||{}; hover[k]=el.checked; saveHover(); };
+    else el.onchange=()=>{ const v=parseFloat(el.value); if(!isNaN(v)){ hover=hover||{}; hover[k]=v; saveHover(); } };
+  });
+}
+/* ── live pricing status: shows the resolved league + load state, and uses the detected league as the
+      placeholder in the (blank = auto-detect) league field so the user can see what auto-detect picked. ── */
+async function pollPrices(){
+  try{
+    const p = await getJSON('/api/prices');
+    const st = $('#priceStatus'); const lg = $('#giLeague');
+    if(lg && p.league) lg.placeholder = p.league + ' (auto)';
+    if(st){
+      st.textContent = p.loaded
+        ? `${p.league||'?'} — ${p.count||0} items loaded`
+        : (p.status||'loading…');
+      st.style.color = p.loaded ? 'var(--good, #3ddc97)' : 'var(--ink-dim)';
+    }
+  }catch(e){}
 }
 /* ── monolith (expedition) rewards (nested object: POST the whole {monoliths}) ── */
 let mono = null;
@@ -805,7 +870,8 @@ function wireExchange(){
 async function saveSetting(key,val){
   try{
     await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val})});
-    const m=$('#savedMsg'); m.classList.add('show'); clearTimeout(m._t); m._t=setTimeout(()=>m.classList.remove('show'),1100);
+    // Flash every on-page "saved" indicator (one per tab) — only the visible tab's is seen.
+    $$('.saved').forEach(m=>{ m.classList.add('show'); clearTimeout(m._t); m._t=setTimeout(()=>m.classList.remove('show'),1100); });
   }catch(e){}
 }
 function wireSettings(){
@@ -1512,7 +1578,7 @@ async function checkVersion(){
   }catch(e){}
 }
 
-wireSettings(); wireHpBars(); wireTerrain(); wireGround(); wireMono(); wireExchange();
+wireSettings(); wireHpBars(); wireTerrain(); wireGround(); wireHover(); wireMono(); wireExchange();
 loadIcons().then(()=>{ loadSettings(); loadFilters(); }); // Rules is the default tab
 tick(); setInterval(tick, 1000);
 checkVersion();

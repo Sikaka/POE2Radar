@@ -637,19 +637,29 @@ public sealed class OverlayRenderer : IDisposable
     private void DrawHoverPrice(ID2D1RenderTarget rt, RenderContext ctx)
     {
         if (ctx.HoverPrice is not { } hp) return;
-        const float barH = 22f, gap = 3f, pad = 8f;
-        var x = hp.X;
-        var w = MathF.Max(60f, hp.W);                    // align to the tooltip width
-        // Below the tooltip by default; snap above its top edge when there's no room at the bottom.
+        const float rowH = 17f, gap = 3f, pad = 7f, charW = 7.3f;  // charW ≈ Consolas 12px advance
+        var twoRow = !string.IsNullOrEmpty(hp.Sub);
+        var chipH = (twoRow ? 2f * rowH : rowH) + 6f;
+        // Chip width fits the longer line (monospace ⇒ width ≈ char count); wide enough for all the text.
+        var maxLen = Math.Max(hp.Text.Length, hp.Sub.Length);
+        var w = MathF.Max(56f, maxLen * charW + 2f * pad);
+
+        // Anchor to the item icon: centre the chip on the slot, just below it; flip above if no room below,
+        // and clamp inside the screen so it never runs off an edge.
+        var x = hp.X + hp.W * 0.5f - w * 0.5f;
+        x = Math.Clamp(x, 2f, ctx.WindowWidth - w - 2f);
         var y = hp.Y + hp.H + gap;
-        if (y + barH > ctx.WindowHeight - 2f) y = hp.Y - barH - gap;
+        if (y + chipH > ctx.WindowHeight - 2f) y = hp.Y - chipH - gap;
         if (y < 2f) y = 2f;
 
-        var box = new Vortice.RawRectF(x, y, x + w, y + barH);
+        var box = new Vortice.RawRectF(x, y, x + w, y + chipH);
         rt.FillRectangle(box, _bPanel!);
         _bStyle!.Color = hp.Highlight ? ColItemHi : ColItemText;
         rt.DrawRectangle(box, _bStyle, hp.Highlight ? 2f : 1f);
-        rt.DrawText(hp.Text, _tf!, new Rect(x + pad, y + 3f, x + w - pad, y + barH - 2f), _bStyle, DrawTextOptions.Clip);
+        // Row 1: stack total (emphasis colour). Row 2 (stacks only): per-unit, in dimmer white.
+        rt.DrawText(hp.Text, _tf!, new Rect(x + pad, y + 3f, x + w - pad, y + rowH + 3f), _bStyle, DrawTextOptions.Clip);
+        if (twoRow)
+            rt.DrawText(hp.Sub, _tf!, new Rect(x + pad, y + rowH + 3f, x + w - pad, y + chipH - 2f), _bText!, DrawTextOptions.Clip);
     }
 
     /// <summary>Unpack a 0xAARRGGBB color (precomputed in RadarApp.BuildHpSpecs) to a Color4 — no string

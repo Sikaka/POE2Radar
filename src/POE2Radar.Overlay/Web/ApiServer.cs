@@ -502,6 +502,7 @@ public sealed class ApiServer : IDisposable
         hpBars = _settings.HpBars,   // monster HP-bar geometry (width/height/offset)
         terrain = _settings.Terrain, // walkable-terrain bitmap colors/transparency
         groundItems = _settings.GroundItems, // ground-item value overlay (enabled / highlight threshold / league)
+        hoverPrice = _settings.HoverPrice, // hover-tooltip price chip (enabled / highlight threshold)
         monoliths = _settings.Monoliths, // runeshape-monolith (expedition) reward overlay + value gate
         currencyExchange = _settings.CurrencyExchange, // currency-exchange order-book depth panel (enabled / max rows)
         // Atlas declutter / content-icon / route-chevron options + colour groups (#3/#4/#5/#7).
@@ -571,6 +572,9 @@ public sealed class ApiServer : IDisposable
                     break;
                 case "groundItems" when p.Value.ValueKind == JsonValueKind.Object:
                     if (TryParseGroundItems(p.Value, out var gi)) { _settings.GroundItems = gi; applied.Add(p.Name); }
+                    break;
+                case "hoverPrice" when p.Value.ValueKind == JsonValueKind.Object:
+                    if (TryParseHoverPrice(p.Value, out var hp)) { _settings.HoverPrice = hp; applied.Add(p.Name); }
                     break;
                 case "monoliths" when p.Value.ValueKind == JsonValueKind.Object:
                     if (TryParseMonoliths(p.Value, out var mono)) { _settings.Monoliths = mono; applied.Add(p.Name); }
@@ -750,6 +754,22 @@ public sealed class ApiServer : IDisposable
             parsed.Categories = (parsed.Categories ?? new())
                 .Where(c => !string.IsNullOrWhiteSpace(c)).Distinct(StringComparer.OrdinalIgnoreCase).Take(32).ToList();
             g = parsed;
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    /// <summary>Deserialize + sanitize a full <see cref="HoverPriceSettings"/> from posted JSON.
+    /// Mirrors <see cref="TryParseGroundItems"/>. Returns false (settings untouched) on a parse failure.</summary>
+    private static bool TryParseHoverPrice(JsonElement el, out HoverPriceSettings h)
+    {
+        h = new HoverPriceSettings();
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<HoverPriceSettings>(el.GetRawText(), Json);
+            if (parsed == null) return false;
+            parsed.HighlightMinEx = Math.Max(0, parsed.HighlightMinEx);
+            h = parsed;
             return true;
         }
         catch (JsonException) { return false; }

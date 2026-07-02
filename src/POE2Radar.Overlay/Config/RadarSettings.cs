@@ -465,8 +465,11 @@ public sealed class GroundItemSettings
     public double UniqueMinEx { get; set; } = 5.0;       // uniques floor
     public double CurrencyMinEx { get; set; } = 1.0;     // currency floor
     public double OtherMinEx { get; set; } = 1.0;        // floor for everything else (runes/essences/fragments/…)
-    public int MinQuantity { get; set; } = 2;            // skip listings with fewer than N for sale (confidence)
-    public string League { get; set; } = "";             // blank = auto-detect current league
+    // SHARED pricing-confidence threshold (ground overlay + hover): a price backed by a positive-but-lower
+    // listing count is FLAGGED with a "?" suffix rather than hidden, so a possible mislisting still shows but
+    // reads as uncertain. A reported volume of 0 = "no volume data" (many legit fungibles), never flagged.
+    public int MinQuantity { get; set; } = 2;
+    public string League { get; set; } = "";             // SHARED price league (ground + hover); blank = auto-detect current league
     // Draw the value chip ON the game's own loot tag (game-computed rect → no projection, no jitter) for
     // everything the game already names (currency/runes/essences/fragments/identified uniques), matched by
     // the tag's text. UNIDENTIFIED uniques (name hidden by the game) always use the world-projected reveal.
