@@ -61,11 +61,11 @@ public static class Poe2
     public static class AreaInstance
     {
         public const int AreaInfoPtr      = 0x0A0;  // ✓ → AreaInfo; +0x00 → UTF-16 "Code\0Name\0" (Code validated 'G1_town')
-        public const int LocalPlayer      = 0x5B8;  // ✓ → player Entity (value-scanned player matched here). 2026-06-25 patch shifted +0x18 (was 0x5A0).
-        public const int ServerDataPtr    = 0x598;  // ✓ → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5B8). 2026-06-25 patch shifted +0x18 (was 0x580).
-        public const int AwakeEntities    = 0x6D8;  // ✓ StdMap of live entities (id→EntityPtr). 2026-06-25 patch shifted +0x18 (was 0x6C0).
-        public const int SleepingEntities = 0x6E8;  // ✓ StdMap. 2026-06-25 patch shifted +0x18 (was 0x6D0).
-        public const int TerrainMetadata  = 0x8B8;  // ✓ TerrainStruct base. 2026-06-25 patch shifted +0x18 (was 0x8A0).
+        public const int LocalPlayer      = 0x5C0;  // ✓ → player Entity (value-scanned player matched here). 2026-07-16 patch shifted +0x08 (was 0x5B8); 2026-06-25 shifted +0x18 (was 0x5A0).
+        public const int ServerDataPtr    = 0x5A0;  // ✓ → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5C0). 2026-07-16 patch shifted +0x08 (was 0x598); 2026-06-25 shifted +0x18 (was 0x580).
+        public const int AwakeEntities    = 0x6E0;  // ✓ StdMap of live entities (id→EntityPtr). 2026-07-16 patch shifted +0x08 (was 0x6D8); 2026-06-25 shifted +0x18 (was 0x6C0).
+        public const int SleepingEntities = 0x6F0;  // ✓ StdMap. 2026-07-16 patch shifted +0x08 (was 0x6E8); 2026-06-25 shifted +0x18 (was 0x6D0).
+        public const int TerrainMetadata  = 0x8C0;  // ✓ TerrainStruct base. 2026-07-16 patch shifted +0x08 (was 0x8B8); 2026-06-25 shifted +0x18 (was 0x8A0).
         public const int CurrentAreaLevel = 0x0C4;  // ✓ int — per-area, validated 27/32 (GH2's 0xBC drifted)
         public const int CurrentAreaHash  = 0x11C;  // ✓ uint — per-area random hash (GH2's 0xFC drifted; +0x120 paired seed)
     }
