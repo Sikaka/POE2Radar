@@ -2373,6 +2373,26 @@ public sealed class RadarApp : IDisposable
             highlightTags = _settings.AtlasHighlightTags,
             navTags = _settings.AtlasNavTags,
             arrowTags = _settings.AtlasArrowTags,
+            // Route-pipeline diagnostics (post-patch triage): what the world thread last PUBLISHED for the
+            // renderer, plus the graph/current-node inputs it routes from. If marks>0 but autoRoutes==0 the
+            // graph or the nav set is the problem, not the projection.
+            routing = new
+            {
+                graphNodes = _atlas.GraphNodeCount,
+                currentGrid = _atlas.CurrentNodeGrid() is { } cgd ? $"{cgd.X},{cgd.Y}" : null,
+                accessible = nodes.Count(n => n.Accessible),
+                completed = nodes.Count(n => n.Completed),
+                published = _atlasRender is { } arn ? new
+                {
+                    open = arn.Open,
+                    marks = arn.Marks.Count,
+                    navMarks = arn.Marks.Count(m => m.Nav),
+                    current = arn.Current != null,
+                    autoRoutes = arn.AutoRoutes.Count,
+                    hops = arn.AutoRoutes.Select(r => r.Hops).ToArray(),
+                    f10Route = arn.Route?.Count ?? 0,
+                } : null,
+            },
             // The individual live nodes for the dashboard's grid. On-screen first, then content/unvisited.
             nodeList = nodes
                 .OrderByDescending(n => n.Visible).ThenByDescending(n => n.HasContent).ThenByDescending(n => !n.Visited)

@@ -39,9 +39,9 @@ public static class Poe2
     /// </summary>
     public static class InGameState
     {
-        public const int AreaInstanceData = 0x290; // ✓ → AreaInstance (validated: target holds the local player)
-        public const int UiRoot           = 0x2F0; // ✓ → root UiElement (self-ref; children are UI elements)
-        public const int Camera           = 0x368; // ✓ → Camera object (Zoom @ +0x528 == 1.0 confirmed)
+        public const int AreaInstanceData = 0x2A0; // ✓ → AreaInstance (validated: target holds the local player). 2026-09-05 league patch shifted +0x10 (was 0x290).
+        public const int UiRoot           = 0x300; // ✓ → root UiElement (self-ref; children are UI elements). 2026-09-05 league patch shifted +0x10 (was 0x2F0).
+        public const int Camera           = 0x378; // ✓ → Camera object (Zoom @ +0x528 == 1.0 confirmed). 2026-09-05 league patch shifted +0x10 (was 0x368).
         public const int WorldData        = 0x310; // (GH2-drift) → WorldData (area name + camera) — TBD
         public const int UiRootStructPtr  = 0x340; // (GH2-drift) reads 0 here — TBD
     }
@@ -60,14 +60,26 @@ public static class Poe2
     /// </summary>
     public static class AreaInstance
     {
-        public const int AreaInfoPtr      = 0x0A0;  // ✓ → AreaInfo; +0x00 → UTF-16 "Code\0Name\0" (Code validated 'G1_town')
-        public const int LocalPlayer      = 0x5C0;  // ✓ → player Entity (value-scanned player matched here). 2026-07-16 patch shifted +0x08 (was 0x5B8); 2026-06-25 shifted +0x18 (was 0x5A0).
-        public const int ServerDataPtr    = 0x5A0;  // ✓ → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5C0). 2026-07-16 patch shifted +0x08 (was 0x598); 2026-06-25 shifted +0x18 (was 0x580).
-        public const int AwakeEntities    = 0x6E0;  // ✓ StdMap of live entities (id→EntityPtr). 2026-07-16 patch shifted +0x08 (was 0x6D8); 2026-06-25 shifted +0x18 (was 0x6C0).
-        public const int SleepingEntities = 0x6F0;  // ✓ StdMap. 2026-07-16 patch shifted +0x08 (was 0x6E8); 2026-06-25 shifted +0x18 (was 0x6D0).
-        public const int TerrainMetadata  = 0x8C0;  // ✓ TerrainStruct base. 2026-07-16 patch shifted +0x08 (was 0x8B8); 2026-06-25 shifted +0x18 (was 0x8A0).
-        public const int CurrentAreaLevel = 0x0C4;  // ✓ int — per-area, validated 27/32 (GH2's 0xBC drifted)
-        public const int CurrentAreaHash  = 0x11C;  // ✓ uint — per-area random hash (GH2's 0xFC drifted; +0x120 paired seed)
+        public const int AreaInfoPtr      = 0x098;  // ✓ → WorldAreas row (see Poe2.AreaInfo); Code validated 'P3_3'/'Glacial Tarn'. 2026-09-05 league patch shifted -0x08 (was 0x0A0, which now holds the WorldAreas.dat file object, not the row).
+        public const int LocalPlayer      = 0x5D0;  // ✓ → player Entity (value-scanned player matched here). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x5B8); 2026-06-25 shifted +0x18 (was 0x5A0).
+        public const int ServerDataPtr    = 0x5B0;  // ✓ → ServerData (gateway to player inventories; +0x20 here = LocalPlayer @ 0x5D0). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x598); 2026-06-25 shifted +0x18 (was 0x580).
+        public const int AwakeEntities    = 0x6F0;  // ✓ StdMap of live entities (id→EntityPtr). 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x6D8); 2026-06-25 shifted +0x18 (was 0x6C0).
+        public const int SleepingEntities = 0x700;  // ✓ StdMap. 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x6E8); 2026-06-25 shifted +0x18 (was 0x6D0).
+        public const int TerrainMetadata  = 0x8D0;  // ✓ TerrainStruct base. 2026-09-05 league patch shifted +0x10; 2026-07-16 shifted +0x08 (was 0x8B8); 2026-06-25 shifted +0x18 (was 0x8A0).
+        public const int CurrentAreaLevel = 0x0BC;  // ✓ int — per-area. 2026-09-05 league patch shifted -0x08 (was 0x0C4, which now reads 0).
+        public const int CurrentAreaHash  = 0x114;  // ✓ uint — per-area random hash. 2026-09-05 league patch shifted -0x08 (was 0x11C).
+    }
+
+    /// <summary>
+    /// A WorldAreas.dat row, reached via <see cref="AreaInstance.AreaInfoPtr"/>. Both fields are raw
+    /// (unaligned) pointers to NUL-terminated UTF-16 — they are NOT std::wstring. ✓ live 2026-09-05.
+    /// <para>Before the 2026-09-05 league patch the reader assumed Name sat immediately after Code's
+    /// terminator; the row now pads between them, so read Name through its own pointer.</para>
+    /// </summary>
+    public static class AreaInfo
+    {
+        public const int Code = 0x00; // ✓ → UTF-16 area code (e.g. "P3_3")
+        public const int Name = 0x08; // ✓ → UTF-16 display name (e.g. "Glacial Tarn")
     }
 
     /// <summary>Entity StdMap conventions. Maps live at AreaInstance+0x6C0 (Awake) / +0x6D0 (Sleeping).</summary>
@@ -95,8 +107,8 @@ public static class Poe2
     {
         public const int EntityDetailsPtr = 0x08; // ✓ → EntityDetails
         public const int ComponentList    = 0x10; // ✓ StdVector of component pointers (8-byte elems)
-        public const int Id               = 0x80; // (GH2) uint  (read 0 for local player — revisit)
-        public const int IsValid          = 0x84; // (GH2) byte; valid when bit0 clear
+        public const int Id               = 0x88; // ✓ uint. 2026-09-05: was 0x80 (which read 0 for the local player — that was the drift, not a quirk).
+        public const int IsValid          = 0x8C; // ✓ byte. 2026-09-05: was 0x84.
     }
 
     public static class EntityDetails
@@ -149,7 +161,7 @@ public static class Poe2
         public const int Level = 0x204; // ✓ byte (low byte of a u32 slot)
     }
 
-    /// <summary>Camera object (at InGameState+0x368). Holds the WorldToScreen matrix.</summary>
+    /// <summary>Camera object (at InGameState+0x378). Holds the WorldToScreen matrix.</summary>
     public static class Camera
     {
         // The matrix is stored duplicated (two identical 0x40-byte copies back-to-back); the first
@@ -282,7 +294,7 @@ public static class Poe2
     /// +0x08 ptr InventoryStruct, +0x10 ptr (= +0x08 − 0x10, the fingerprint invariant).</summary>
     public static class ServerData
     {
-        public const int League = 0x21E0;  // ✓ live 2026-06-22 (--league) — std::wstring current league name, EXACTLY poe.ninja/poe2scout's Value (e.g. "HC Runes of Aldur", "Standard", "Hardcore"). The HC/SC prefix lets us auto-detect the price league.
+        public const int League = 0x2160;  // ✓ live 2026-09-05 (--league) — std::wstring current league name, EXACTLY poe.ninja/poe2scout's Value (e.g. "HC Runes of Aldur", "Standard", "Hardcore"). The HC/SC prefix lets us auto-detect the price league. 2026-09-05 league patch shifted -0x80 (was 0x21E0).
         public const int PlayerServerDataVec = 0x48;  // ✓ StdVector<IntPtr>; [0] → ServerDataStructure
         public const int PlayerInventoriesVec = 0x320; // ✓ (on ServerDataStructure) StdVector<InventoryArrayStruct>
         public const int InvArrayStride = 0x18;        // ✓ sizeof(InventoryArrayStruct)
@@ -457,9 +469,9 @@ public static class Poe2
     /// </summary>
     public static class MapUiElement
     {
-        public const int Shift        = 0x368; // ✓ StdTuple2D<float>
-        public const int DefaultShift = 0x370; // ✓ StdTuple2D<float> (0,-20)
-        public const int Zoom         = 0x3A8; // ✓ float (0.5 live)
+        public const int Shift        = 0x350; // ✓ StdTuple2D<float>. 2026-09-05 league patch shifted -0x18 (was 0x368).
+        public const int DefaultShift = 0x358; // ✓ StdTuple2D<float> (0,-20). 2026-09-05 league patch shifted -0x18 (was 0x370).
+        public const int Zoom         = 0x390; // ✓ float (0.5 live). 2026-09-05 league patch shifted -0x18 (was 0x3A8).
     }
 
     /// <summary>UiElement base — ✓ validated live (GH2's offsets drifted: Self 0x30→0x8, Flags 0x1B8→0x180).
@@ -470,19 +482,19 @@ public static class Poe2
         public const int Self           = 0x08;  // ✓ self pointer
         public const int Children       = 0x10;  // ✓ StdVector begin (child UiElement ptrs); End @ +0x18
         public const int ChildrenEnd    = 0x18;  // ✓ StdVector end
-        public const int PositionModifier = 0xF0; // StdTuple2D<float>; added to parent pos when Flags bit 0x0A set (GH2 UiElementBase)
-        public const int Parent         = 0xB8;  // (community) parent UiElement; true UI root = *(UiRoot+0xB8)
-        public const int RelativePos    = 0x118; // ✓ StdTuple2D<float> position relative to parent (varies per atlas node)
-        public const int LocalScaleMul  = 0x130; // float local scale multiplier (also the atlas zoom on node elements)
-        public const int Flags          = 0x180; // ✓ uint; IsVisibleLocal = bit 0x0B (toggle-diff: 0x2EF1↔0x26F1)
+        public const int PositionModifier = 0x108; // StdTuple2D<float>; added to parent pos when Flags bit 0x0A set. 2026-09-05: was 0xF0 (moved +0x18, NOT the -0x18 the neighbouring fields took — do not infer it).
+        public const int Parent         = 0xB8;  // ✓ (community) parent UiElement; true UI root = *(UiRoot+0xB8). UNCHANGED by the 2026-09-05 league patch — verified 270/270 by --ui-parentscan (child round-trips through the candidate's Children vector). The class did NOT shift uniformly: Self/Children/Parent held still while Flags moved -0x18 and Text -0x30, so verify each field, never apply one blanket shift.
+        public const int RelativePos    = 0x100; // ✓ StdTuple2D<float> position relative to parent (varies per atlas node). 2026-09-05 league patch: -0x18 (was 0x118).
+        public const int LocalScaleMul  = 0x118; // float local scale multiplier (also the atlas zoom on node elements). 2026-09-05 league patch: -0x18 (was 0x130).
+        public const int Flags          = 0x168; // ✓ uint; IsVisibleLocal = bit 0x0B. 2026-09-05 league patch: -0x18 (was 0x180); re-confirmed live by map-toggle diff 0x00502EF1↔0x005026F1 (--map-watch).
         public const int FlagVisibleBit = 0x0B;  // ✓ visible bit (set when shown)
-        public const int FlagModifyPosBit = 0x0A; // when set, PositionModifier (+0xF0) is added to the parent pos
-        public const int ScaleIndex     = 0x18A; // byte; selects which axis scale(s) apply (1=v1,2=v2,3=v1×v2). root=3
-        public const int Text           = 0x390; // std::wstring of the element's displayed text (font name @ +0xC8).
+        public const int FlagModifyPosBit = 0x0A; // when set, PositionModifier (+0x108) is added to the parent pos
+        public const int ScaleIndex     = 0x172; // byte; selects which axis scale(s) apply (1=v1,2=v2,3=v1×v2). root=3. 2026-09-05 league patch: -0x18 (was 0x18A).
+        public const int Text           = 0x360; // ✓ std::wstring of the element's displayed text. 2026-09-05 league patch: -0x30 (was 0x390) — note this is NOT the -0x18 the rest of the class moved, so derive it with --ui-textscan (offset histogram over visible elements) rather than by applying the class shift.
                                                   // Validated live 2026-06-14: every text element (loot tags, skill
                                                   // rows, runeforge rows) holds its UTF-16 string here.
-        public const int SizeW          = 0x288; // ✓ float unscaled width  (atlas node = 40)
-        public const int SizeH          = 0x28C; // ✓ float unscaled height (atlas node = 40)
+        public const int SizeW          = 0x270; // ✓ float unscaled width  (atlas node = 40). 2026-09-05 league patch: -0x18 (was 0x288).
+        public const int SizeH          = 0x274; // ✓ float unscaled height (atlas node = 40). 2026-09-05 league patch: -0x18 (was 0x28C).
         // Full visibility is hierarchical: an element is shown iff its own bit 0x0B AND every
         // ancestor's bit are set. Walk Parent (+0xB8) up to the root.
         // Screen geometry (GH2 UiElementBaseFuncs): v1 = winW/2560, v2 = winH/1600 (BaseResolution
@@ -505,8 +517,8 @@ public static class Poe2
             { 0x00462EF1, 0x00502EF3, 0x00502EF7, 0x00542EF1, 0x00502EF1 };
         public const int GateStep = 0;       // the window-container; its visible bit gates panel-open
         public const int ViewportStep = 2;   // this hop's element holds the scroll offset (+0x120)
-        public const int ScrollOffset = 0x120; // StdTuple2D<float> viewport scroll offset
-        public const int NameWString = 0x390;  // visible row's kid[0]: inline std::wstring "<count>x <name>"
+        public const int ScrollOffset = 0x108; // StdTuple2D<float> viewport scroll offset. 2026-09-05 league patch: -0x18 (was 0x120).
+        public const int NameWString = UiElement.Text;  // visible row's kid[0]: inline std::wstring "<count>x <name>" — always the generic Text field; keep it derived so it can't drift apart from it.
     }
 
     /// <summary>The world Entity currently under the cursor — monsters, NPCs, doodads, ground items
@@ -518,13 +530,13 @@ public static class Poe2
     /// Cheap ground-truth for "what is the user pointing at", invaluable for mapping entities/elements.</summary>
     public static class MouseOver
     {
-        public const int HostFromInGameState = 0x300; // ✓ → host object
+        public const int HostFromInGameState = 0x310; // ✓ → host object. 2026-09-05 league patch shifted +0x10 (was 0x300 — note the NEW UiRoot is 0x300, so a stale value here silently walks the UI root instead).
         public const int SubFromHost         = 0x3F0; // ✓ → sub object
         public const int EntityFromSub       = 0xA8;  // ✓ → hovered Entity (0 when nothing/UI hovered)
     }
 
     /// <summary>The Currency Exchange panel (Kalguur market). The panel is a UI element — a direct child of
-    /// GameUi (<c>InGameState+0x2F0</c>) — holding TWO inline <c>std::vector</c> headers (begin/end/cap) that
+    /// GameUi (<c>InGameState+0x300</c>) — holding TWO inline <c>std::vector</c> headers (begin/end/cap) that
     /// each point to a heap array of stock entries. Cross-referenced 1:1 from the PoE1 ExileApi
     /// <c>CurrencyExchangePanel</c> (PoE1 offsets 0x430/0x448; PoE2 shifted to 0x478/0x490) and validated live
     /// 2026-06-29 (Research <c>--exchange-panel3</c>): Exalted-want/Chaos-have @ 50:1 → offered[0] Get=50 Give=1.
@@ -549,7 +561,7 @@ public static class Poe2
     /// in ExileApi terms). Its CHILDREN are the per-item loot tags (one text element per on-ground item);
     /// a tag's first line of <see cref="UiElement.Text"/> IS the item name (the PriceBook key). Located by
     /// the same FLAGS-FINGERPRINT walk-with-backtracking as <see cref="Runeforge"/> (child indices drift
-    /// per patch, the Flags "role" bits don't): from GameUi (<c>InGameState+0x2F0</c>) descend
+    /// per patch, the Flags "role" bits don't): from GameUi (<c>InGameState+0x300</c>) descend
     /// child{<see cref="ContainerFlagFingerprints"/>[0]} → child[0]{[1]} → child[0]{[2]} = the container.
     /// The visible bit (0x800) is masked on both sides of every compare. Confining the loot-tag scan to
     /// THIS subtree (instead of the whole UI tree) is what stops value chips landing on unrelated UI panels
@@ -592,17 +604,17 @@ public static class Poe2
     /// reading +0x08 fixed web-UI filters where Prettify(code) mismatched the in-game name.</summary>
     public static class AtlasMapRow
     {
-        public const int WorldAreaName = 0x08; // ✓ WorldAreas row +0x08 → UTF-16 localized map name
+        public const int WorldAreaName = 0x32; // ✓ live 2026-09-05 — packed ptr → localized name ("[DNT] District B"). 2026-09-05: was 0x08, which now holds an art path (*.dds), not the name.
     }
 
     public static class AtlasNode
     {
         public const int MapNodeId   = 0x300; // ✓ u32 — distinct per node
-        public const int Content     = 0x310; // (community) u32 content (0 = none)
+        public const int Content     = 0x310; // ⚠ 2026-09-05: this slot is now GridPos, NOT a content-row ptr. Rolled content lives on the +0x300 row at +0x38. Do not read as content.
         public const int State       = 0x32C; // (community) u8 state (seen =1 on loaded nodes)
-        public const int Biome       = 0x32E; // ✓ u8 biome index (0..12)
+        public const int Biome       = 0x32E; // ⚠ 2026-09-05: NO LONGER a 0..12 biome index (byte scatter 0..255). Independently confirmed by --atlas-nodescan finding no biome-shaped field anywhere on the node or its data struct. Unresolved — do not rely on it.
         public const int Flags       = 0x32F; // (community) u8: bit0 unlocked, bit1 visited
-        public const int GridPos     = 0x320; // ✓ live 2026-06-08 — StdTuple2D<int> atlas grid coord (X,Y); 1:1 with node, range small (e.g. X[-16..31] Y[0..47]). The key for node-graph pathfinding. (GameHelper2-sourced)
+        public const int GridPos     = 0x310;  // ✓ live 2026-09-05 StdTuple2D<int> X[-48..31] Y[16..127] — the node-graph key. 2026-09-05: was 0x320. // ✓ live 2026-06-08 — StdTuple2D<int> atlas grid coord (X,Y); 1:1 with node, range small (e.g. X[-16..31] Y[0..47]). The key for node-graph pathfinding. (GameHelper2-sourced)
         public const int Completion  = 0x339; // (community) u8 per-node completion id
         public const int ContentVec  = 0x350; // (community) StdVector begin (content list); End @ +0x358
 
@@ -615,8 +627,11 @@ public static class Poe2
         public const int DataStorage = 0x10;   // *(node+0x10) → storage
         public const int DataModel   = 0x20;   // *(storage+0x20) → nodeData
         public const int DataBiome   = 0x2CE;  // u8 within nodeData
-        public const int DataStatus  = 0x2CF;  // u8 within nodeData: bit0 accessible, bit1 completed
-        public const int DataMapId   = 0x2A0;  // ptr chain → UTF-16 "MapXxx"
+        public const int DataStatus  = 0x2BC;  // ✓ live 2026-09-05 — u8 within nodeData: bit0 accessible, bit1 completed, bit2 locked.
+                                               // 2026-09-05: was 0x2CF, which now reads a CONSTANT — so every node reported
+                                               // Completed=true and `atlasHideCompleted` hid the entire atlas. Re-found by
+                                               // --atlas-gridscan's status sweep: {1 x177 accessible, 3 x70 completed, 4 x153 locked}.
+        public const int DataMapId   = 0x290;  // ✓ live 2026-09-05 — ptr chain → UTF-16 "MapXxx" (the ROLLED map). 2026-09-05: was 0x2A0.  // ptr chain → UTF-16 "MapXxx"
     }
 
     /// <summary>Atlas CONNECTION GRAPH (✓ live 2026-06-08, GameHelper2-sourced). The node canvas (the
@@ -629,7 +644,7 @@ public static class Poe2
     /// Re-discover after a patch with <c>POE2Radar.Research --atlas-graph</c>.</summary>
     public static class AtlasGraph
     {
-        public const int ConnectionsVec = 0x5A8; // on the node canvas: StdVector<edge> begin; End @ +0x5B0
+        public const int ConnectionsVec = 0x590; // ✓ live 2026-09-05 canvas StdVector<edge>; End @ +0x598. 2026-09-05: was 0x5A8 (-0x18). // on the node canvas: StdVector<edge> begin; End @ +0x5B0
         public const int EdgeStride     = 20;
         public const int EdgeSourceOff  = 0x04;  // StdTuple2D<int>
         public const int EdgeTargetOff  = 0x0C;  // StdTuple2D<int>
@@ -640,11 +655,11 @@ public static class Poe2
         /// accessor is structural, not vtable-keyed (the marker's class drifts per patch), so it's found by
         /// "the lone non-node element whose +0x300 ∈ node set". <c>currentNode = *(marker + 0x300)</c>, then
         /// read the node's <see cref="AtlasNode.GridPos"/>. Re-discover with <c>--atlas-marker</c>.</summary>
-        public const int CurrentMarkerNodePtr = 0x300;
+        public const int CurrentMarkerNodePtr = 0x2E8; // ✓ live 2026-09-05. 2026-09-05: was 0x300.
     }
 
     /// <summary>Atlas screen panel — a PERSISTENT direct child of UiRoot (the element at
-    /// <c>InGameState+0x2F0</c>, walked via its Children StdVector <c>+0x10</c>) at <see cref="UiRootChildIndex"/>.
+    /// <c>InGameState+0x300</c>, walked via its Children StdVector <c>+0x10</c>) at <see cref="UiRootChildIndex"/>.
     /// Present from a cold launch even when the atlas has NEVER been opened (✓ live 2026-06-08); its
     /// UiElement visible bit (Flags <c>+0x180</c> bit <c>0x0B</c>) is the only thing that toggles when the
     /// atlas opens/closes (closed flags 0x5626F5 → open 0x562EF5). This is the cheap atlas open-gate:

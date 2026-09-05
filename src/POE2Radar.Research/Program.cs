@@ -31,6 +31,36 @@ var reader = new MemoryReader(process);
 if (HasFlag(args, "--aob"))
     return RunAobScan(process, reader);
 
+if (HasFlag(args, "--verify-fields"))
+    return POE2Radar.Research.RecoveryVerify.Run(process, reader);
+
+if (HasFlag(args, "--map-watch"))
+    return POE2Radar.Research.MapWatch.Run(process, reader, TryGetIntArg(args, "--secs") ?? 20);
+
+if (HasFlag(args, "--ui-textscan"))
+    return POE2Radar.Research.UiTextDump.Scan(process, reader, (int)(TryGetHexArg(args, "--lo") ?? 0x200), (int)(TryGetHexArg(args, "--hi") ?? 0x500));
+
+if (HasFlag(args, "--ui-parentscan"))
+    return POE2Radar.Research.UiTextDump.ParentScan(process, reader, (int)(TryGetHexArg(args, "--lo") ?? 0x20), (int)(TryGetHexArg(args, "--hi") ?? 0x200));
+
+if (HasFlag(args, "--atlas-strings"))
+    return POE2Radar.Research.AtlasStringScan.Run(process, reader, TryGetStrArg(args, "--needle") ?? "Map");
+
+if (HasFlag(args, "--atlas-gates"))
+    return POE2Radar.Research.AtlasGates.Run(process, reader);
+
+if (HasFlag(args, "--atlas-gridscan"))
+    return POE2Radar.Research.AtlasGridScan.Run(process, reader, (int)(TryGetHexArg(args, "--grid") ?? Poe2.AtlasNode.GridPos));
+
+if (HasFlag(args, "--atlas-nodescan"))
+    return POE2Radar.Research.AtlasNodeScan.Run(process, reader, (int)(TryGetHexArg(args, "--lo") ?? 0x200), (int)(TryGetHexArg(args, "--hi") ?? 0x420), !HasFlag(args, "--direct"));
+
+if (HasFlag(args, "--ui-text"))
+    return POE2Radar.Research.UiTextDump.Run(process, reader, TryGetStrArg(args, "--text"), TryGetIntArg(args, "--max") ?? 14);
+
+if (HasFlag(args, "--recover"))
+    return POE2Radar.Research.Recovery.Run(process, reader, HasFlag(args, "--deep"));
+
 if (HasFlag(args, "--chain"))
     return RunChainProbe(process, reader);
 
@@ -117,7 +147,7 @@ if (TryGetStrArg(args, "--exchange-pairs") is { } pairsArg)
 
 if (HasFlag(args, "--mouseover"))
     return RunMouseOver(process, reader,
-        TryGetHexArg(args, "--h") ?? 0x300, TryGetHexArg(args, "--s") ?? 0x3F0, TryGetHexArg(args, "--e") ?? 0xA8,
+        TryGetHexArg(args, "--h") ?? Poe2.MouseOver.HostFromInGameState, TryGetHexArg(args, "--s") ?? Poe2.MouseOver.SubFromHost, TryGetHexArg(args, "--e") ?? Poe2.MouseOver.EntityFromSub,
         HasFlag(args, "--scan"), HasFlag(args, "--hunt"));
 
 if (HasFlag(args, "--itemhover"))
@@ -277,7 +307,7 @@ if (HasFlag(args, "--atlas-corr"))
 if (HasFlag(args, "--atlas-nodefilter"))
 {
     var (_, igsf, _, _) = ResolveChain(process, reader);
-    var uiRootf = SafePtr(reader, igsf + 0x2F0);
+    var uiRootf = SafePtr(reader, igsf + Poe2.InGameState.UiRoot);
     var rootf = SafePtr(reader, uiRootf + 0xB8) is var trf && trf != 0 ? trf : uiRootf;
     // BFS, group by vtable, pick 0CECA0-like (biome) class, find the canvas = parent with most such children.
     var q = new Queue<nint>(); q.Enqueue(rootf); var seen = new HashSet<nint>(); var byVt = new Dictionary<nint, List<nint>>();
@@ -296,7 +326,7 @@ if (HasFlag(args, "--atlas-nodefilter"))
     var cn = cf == 0 ? 0 : ((long)cl - (long)cf) / 8;
     for (long i = 0; i < cn; i++) { var ch = SafePtr(reader, cf + (nint)(i * 8)); if (ch == 0 || SafePtr(reader, ch) != nv) continue;
         var chf = SafePtr(reader, ch + 0x10); long ccc = 0; if (chf != 0 && reader.TryReadStruct<nint>(ch + 0x18, out var chl)) ccc = ((long)chl - (long)chf) / 8;
-        reader.TryReadStruct<uint>(ch + 0x300, out var id); reader.TryReadStruct<byte>(ch + 0x32E, out var bm); reader.TryReadStruct<float>(ch + 0x118, out var px); reader.TryReadStruct<float>(ch + 0x11C, out var py);
+        reader.TryReadStruct<uint>(ch + 0x300, out var id); reader.TryReadStruct<byte>(ch + 0x32E, out var bm); reader.TryReadStruct<float>(ch + Poe2.UiElement.RelativePos, out var px); reader.TryReadStruct<float>(ch + Poe2.UiElement.RelativePos + 4, out var py);
         // peek a content-icon descendant's content (child→child→0D0680.content).
         uint deepContent = 0; var d = chf;
         for (var lvl = 0; lvl < 3 && d != 0; lvl++) { reader.TryReadStruct<uint>(d + 0x310, out deepContent); if (deepContent is > 0 and < 256) break; d = SafePtr(reader, d + 0x10) is var dd && dd != 0 ? SafePtr(reader, dd) : 0; }
@@ -319,8 +349,8 @@ if (TryGetHexArg(args, "--atlas-up") is { } upEl)
         reader.TryReadStruct<uint>(cur + 0x300, out var id);
         reader.TryReadStruct<uint>(cur + 0x310, out var content);
         reader.TryReadStruct<byte>(cur + 0x32E, out var biome);
-        reader.TryReadStruct<float>(cur + 0x118, out var px); reader.TryReadStruct<float>(cur + 0x11C, out var py);
-        reader.TryReadStruct<float>(cur + 0x288, out var sw); reader.TryReadStruct<float>(cur + 0x28C, out var sh);
+        reader.TryReadStruct<float>(cur + Poe2.UiElement.RelativePos, out var px); reader.TryReadStruct<float>(cur + Poe2.UiElement.RelativePos + 4, out var py);
+        reader.TryReadStruct<float>(cur + Poe2.UiElement.SizeW, out var sw); reader.TryReadStruct<float>(cur + Poe2.UiElement.SizeH, out var sh);
         var first = SafePtr(reader, cur + 0x10); long cc = 0;
         if (first != 0 && reader.TryReadStruct<nint>(cur + 0x18, out var last)) cc = ((long)last - (long)first) / 8;
         Console.WriteLine($"  0x{cur:X} vt=0x{vt:X} children={cc} id={id} content={content} biome={biome} pos=({px:F0},{py:F0}) size=({sw:F0}x{sh:F0})");
@@ -418,6 +448,7 @@ Console.WriteLine("  --presence [--diff]        baseline (then --diff) player co
 Console.WriteLine("  --devtree [--port N]       browser-based live memory/UI/entity explorer (default port 7778)");
 Console.WriteLine("  --serverdata               dump ServerData (AreaInstance+0x580): strings + StdVector quest-list candidates");
 Console.WriteLine("  --league [--needle <str>]  find the league-name string (HC/SC) in ServerData for price auto-detect");
+Console.WriteLine("  --recover [--deep]         post-patch chain recovery (relaxed AOB + offset rediscovery)");
 Console.WriteLine("  --aob                      scan for IngameState via AOB patterns");
 return 0;
 
@@ -1491,16 +1522,20 @@ static int RunCamera(ProcessHandle process, MemoryReader reader)
 // name/level, camera/zoom — and dump the camera object so the WorldToScreen matrix can be found.
 static int RunInfo(ProcessHandle process, MemoryReader reader)
 {
-    var (igs, _, ai, lp) = ResolveChain(process, reader);
+    var (_, igs, ai, lp) = ResolveChain(process, reader);
     if (ai == 0) { Console.Error.WriteLine("Could not resolve chain (in game?)."); return 1; }
     Console.WriteLine($"InGameState 0x{igs:X}  AreaInstance 0x{ai:X}  LocalPlayer 0x{lp:X}");
 
-    // Area name: AreaInstance+0xA0 -> AreaInfo -> +0x00 -> UTF-16 "Code\0Name\0".
-    var areaInfo = SafePtr(reader, ai + 0xA0);
-    var strPtr = SafePtr(reader, areaInfo);
+    // Area name: AreaInstance+AreaInfoPtr -> WorldAreas row -> +0x00 -> UTF-16 "Code\0Name\0".
+    var areaInfo = SafePtr(reader, ai + Poe2.AreaInstance.AreaInfoPtr);
+    var strPtr = SafePtr(reader, areaInfo + Poe2.AreaInfo.Code);
     var code = reader.ReadStringUtf16(strPtr, 64);
-    var name = code.Length > 0 ? reader.ReadStringUtf16(strPtr + (nint)((code.Length + 1) * 2), 64) : "";
+    var namePtr = SafePtr(reader, areaInfo + Poe2.AreaInfo.Name);
+    var name = namePtr == 0 ? "" : reader.ReadStringUtf16(namePtr, 64);
     Console.WriteLine($"AreaInfo 0x{areaInfo:X}  Code='{code}'  Name='{name}'");
+    reader.TryReadStruct<int>(ai + Poe2.AreaInstance.CurrentAreaLevel, out var areaLvl);
+    reader.TryReadStruct<uint>(ai + Poe2.AreaInstance.CurrentAreaHash, out var areaHash);
+    Console.WriteLine($"AreaLevel@0x{Poe2.AreaInstance.CurrentAreaLevel:X} = {areaLvl}   AreaHash@0x{Poe2.AreaInstance.CurrentAreaHash:X} = 0x{areaHash:X8}");
 
     // Character: try the Player component, then a 'Character' component if present.
     foreach (var compName in new[] { "Player", "Character", "PlayerClass" })
@@ -1514,13 +1549,13 @@ static int RunInfo(ProcessHandle process, MemoryReader reader)
         Console.WriteLine($"  [{compName}] @0x{c:X}  name@0x1B0(raw)='{nm0x1B0}' (std)='{nmStd}'  lvl@0x204 int={lvl204} byte={lvlByte}");
     }
 
-    // Camera: InGameState+0x368 -> Camera; Zoom @ +0x528. Dump +0x000..+0x160 to spot the 4x4 matrix.
-    var cam = SafePtr(reader, igs + 0x368);
+    // Camera: InGameState+Camera -> Camera; Zoom @ +0x528. Dump +0x000..+0x160 to spot the 4x4 matrix.
+    var cam = SafePtr(reader, igs + Poe2.InGameState.Camera);
     Console.WriteLine($"Camera 0x{cam:X}");
     if (cam != 0)
     {
-        reader.TryReadStruct<float>(cam + 0x528, out var zoom);
-        Console.WriteLine($"  Zoom@0x528 = {zoom}");
+        reader.TryReadStruct<float>(cam + Poe2.Camera.Zoom, out var zoom);
+        Console.WriteLine($"  Zoom@0x{Poe2.Camera.Zoom:X} = {zoom}");
         var buf = new byte[0x160];
         if (reader.TryReadBytes(cam, buf) == buf.Length)
             for (var i = 0; i < buf.Length; i += 16)
@@ -3320,7 +3355,7 @@ static int RunTooltipCapture(ProcessHandle process, MemoryReader reader)
         if (el == 0 || !visited.Add(el) || depth > 80) continue;
         nodes++;
         reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var flags);
-        var txt = ReadStdWString(reader, el + 0x390);
+        var txt = ReadStdWString(reader, el + Poe2.UiElement.Text);
 
         var body = new byte[0x600];
         if (reader.TryReadBytes(el, body) >= body.Length)
@@ -3482,8 +3517,8 @@ static int RunSubtree(ProcessHandle process, MemoryReader reader, nint root, int
     (float x, float y, float w, float h) Rect(nint el)
     {
         var (ux, uy) = RfUnscaledPos(reader, el, 0);
-        reader.TryReadStruct<float>(el + 0x288, out var w); reader.TryReadStruct<float>(el + 0x28C, out var h);
-        reader.TryReadStruct<byte>(el + 0x18A, out var sidx);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var w); reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var h);
+        reader.TryReadStruct<byte>(el + Poe2.UiElement.ScaleIndex, out var sidx);
         var (sx, sy) = sidx switch { 1 => (v1, v1), 3 => (v1, v2), _ => (v2, v2) };
         return (ux * sx, uy * sy, w * sx, h * sy);
     }
@@ -3538,7 +3573,7 @@ static int RunSubtree(ProcessHandle process, MemoryReader reader, nint root, int
         if (el == 0 || depth > down) return;
         reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var fl);
         var (x, y, w, h) = Rect(el);
-        var txt = ReadStdWString(reader, el + 0x390);
+        var txt = ReadStdWString(reader, el + Poe2.UiElement.Text);
         var pad = new string(' ', depth * 2);
         Console.WriteLine($"{pad}• 0x{el:X} d{depth} flags=0x{fl & ~VisMask:X} vis={(fl & VisMask) != 0} rect=({x:0},{y:0} {w:0}x{h:0}) {(string.IsNullOrEmpty(txt) ? "" : $"text=\"{txt}\"")}");
         Identity(el, pad);
@@ -3588,9 +3623,9 @@ static int RunTributeHover(ProcessHandle process, MemoryReader reader)
         if (visible)
         {
             var (ux, uy) = RfUnscaledPos(reader, el, 0);
-            reader.TryReadStruct<float>(el + 0x288, out var usw);
-            reader.TryReadStruct<float>(el + 0x28C, out var ush);
-            reader.TryReadStruct<byte>(el + 0x18A, out var sidx);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var usw);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var ush);
+            reader.TryReadStruct<byte>(el + Poe2.UiElement.ScaleIndex, out var sidx);
             var (sx, sy) = sidx switch { 1 => (v1, v1), 3 => (v1, v2), _ => (v2, v2) };
             float x = ux * sx, y = uy * sy, w = usw * sx, h = ush * sy;
             if (w > 0 && h > 0 && cur.X >= x && cur.X <= x + w && cur.Y >= y && cur.Y <= y + h)
@@ -3605,7 +3640,7 @@ static int RunTributeHover(ProcessHandle process, MemoryReader reader)
     foreach (var h in hitsUnderCursor.Take(18))
     {
         reader.TryReadStruct<uint>(h.el + Poe2.UiElement.Flags, out var fl);
-        var txt = ReadStdWString(reader, h.el + 0x390);
+        var txt = ReadStdWString(reader, h.el + Poe2.UiElement.Text);
         Console.WriteLine($"• 0x{h.el:X} d{h.depth} flags=0x{fl & ~VisMask:X} rect=({h.x:0},{h.y:0} {h.w:0}x{h.h:0})  text=\"{txt}\"");
         // Identity hunt: item Entity ptr or 2DItems icon DDS reachable from the body.
         var body = new byte[0x380];
@@ -3710,7 +3745,7 @@ static int RunTributeTiles(ProcessHandle process, MemoryReader reader, string co
 static void ReportTile(MemoryReader reader, nint el, int depth, string note)
 {
     reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var flags);
-    var txt = ReadStdWString(reader, el + 0x390);
+    var txt = ReadStdWString(reader, el + Poe2.UiElement.Text);
     DumpUiEl(reader, el, depth, flags, $"{note}  text=\"{txt}\"");
     DumpAncestors(reader, el);
 }
@@ -3725,10 +3760,10 @@ static bool IsMostlyPrintable(string s)
 static void DumpUiEl(MemoryReader reader, nint el, int depth, uint flags, string note)
 {
     const uint VisMask = 1u << Poe2.UiElement.FlagVisibleBit;
-    reader.TryReadStruct<float>(el + 0x118, out var rx);
-    reader.TryReadStruct<float>(el + 0x11C, out var ry);
-    reader.TryReadStruct<float>(el + 0x288, out var sw);
-    reader.TryReadStruct<float>(el + 0x28C, out var sh);
+    reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var rx);
+    reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var ry);
+    reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw);
+    reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
     Console.WriteLine($"\n• 0x{el:X} d{depth} flags=0x{flags:X8} (masked 0x{flags & ~VisMask:X}) vis={(flags & VisMask) != 0} "
                     + $"relPos=({rx:0.#},{ry:0.#}) size=({sw:0.#}x{sh:0.#})  {note}");
 }
@@ -3956,7 +3991,7 @@ static int RunRuneforge(ProcessHandle process, MemoryReader reader)
     // → … → recipes-container. Match (flags & ~visibleBit); see RfWalk.
     uint[] fps = { 0x00462EF1, 0x00502EF3, 0x00502EF7, 0x00542EF1, 0x00502EF1 };
     const uint UiVisibleMask = 1u << Poe2.UiElement.FlagVisibleBit; // 0x800
-    const int RuneforgeNameWString = 0x390;     // kid[0] inline "<count>x <name>" wstring
+    const int RuneforgeNameWString = Poe2.Runeforge.NameWString; // kid[0] inline "<count>x <name>" wstring
     nint slot = 0;
     foreach (var pat in AobPatterns.GameStateRefs)
         foreach (var s in AobScanner.ScanForResolvedAddresses(process, reader, pat).Distinct())
@@ -4000,12 +4035,12 @@ static int RunRuneforge(ProcessHandle process, MemoryReader reader)
         RfParseNameCount(raw, out var count, out var name);
 
         // Raw geometry fields (validate the screen-projection port).
-        reader.TryReadStruct<float>(row + 0x118, out var rx);       // RelativePosition.X
-        reader.TryReadStruct<float>(row + 0x11C, out var ry);       // RelativePosition.Y
-        reader.TryReadStruct<float>(row + 0x288, out var sw);       // UnscaledSize.X
-        reader.TryReadStruct<float>(row + 0x28C, out var sh);       // UnscaledSize.Y
-        reader.TryReadStruct<float>(row + 0x130, out var smul);     // LocalScaleMultiplier
-        reader.TryReadStruct<byte>(row + 0x18A, out var sidx);      // ScaleIndex
+        reader.TryReadStruct<float>(row + Poe2.UiElement.RelativePos, out var rx);       // RelativePosition.X
+        reader.TryReadStruct<float>(row + Poe2.UiElement.RelativePos + 4, out var ry);   // RelativePosition.Y
+        reader.TryReadStruct<float>(row + Poe2.UiElement.SizeW, out var sw);       // UnscaledSize.X
+        reader.TryReadStruct<float>(row + Poe2.UiElement.SizeH, out var sh);       // UnscaledSize.Y
+        reader.TryReadStruct<float>(row + Poe2.UiElement.LocalScaleMul, out var smul);     // LocalScaleMultiplier
+        reader.TryReadStruct<byte>(row + Poe2.UiElement.ScaleIndex, out var sidx);      // ScaleIndex
         var (ux, uy) = RfUnscaledPos(reader, row, 0);
         shown++;
         Console.WriteLine($"  [{shown}] '{raw}'  -> count={count} name='{name}'");
@@ -4045,7 +4080,7 @@ static nint RfWalk(MemoryReader reader, nint parent, int step, uint[] fps)
 
 static bool RfIsRecipesContainer(MemoryReader reader, nint addr)
 {
-    const int RuneforgeNameWString = 0x390;
+    const int RuneforgeNameWString = Poe2.Runeforge.NameWString;
     if (!RfChildren(reader, addr, out var first, out var n)) return false;
     for (long i = 0; i < n; i++)
     {
@@ -4077,15 +4112,15 @@ static nint RfChild(MemoryReader reader, nint el, int index)
 // The final ×(winSize/2560,1600) scaling is done overlay-side where the window size is known.
 static (float x, float y) RfUnscaledPos(MemoryReader reader, nint el, int depth)
 {
-    reader.TryReadStruct<float>(el + 0x118, out var lx);
-    reader.TryReadStruct<float>(el + 0x11C, out var ly);
+    reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var lx);
+    reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var ly);
     var parent = SafePtr(reader, el + Poe2.UiElement.Parent);
     if (parent == 0 || depth >= 64) return (lx, ly);
     var (px, py) = RfUnscaledPos(reader, parent, depth + 1);
     if (reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var f) && (f & (1u << 0x0A)) != 0)
     {
-        reader.TryReadStruct<float>(el + 0xF0, out var mx);
-        reader.TryReadStruct<float>(el + 0xF4, out var my);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.PositionModifier, out var mx);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.PositionModifier + 4, out var my);
         px += mx; py += my;
     }
     return (px + lx, py + ly);
@@ -4296,8 +4331,8 @@ static int RunLootVec(ProcessHandle process, MemoryReader reader)
         var name = known.GetValueOrDefault((long)item, "?");
         reader.TryReadStruct<float>(lbl + Poe2.UiElement.SizeW, out var sw);
         reader.TryReadStruct<float>(lbl + Poe2.UiElement.SizeH, out var sh);
-        reader.TryReadStruct<byte>(lbl + 0x18A, out var sidx);
-        reader.TryReadStruct<float>(lbl + 0x130, out var smul);
+        reader.TryReadStruct<byte>(lbl + Poe2.UiElement.ScaleIndex, out var sidx);
+        reader.TryReadStruct<float>(lbl + Poe2.UiElement.LocalScaleMul, out var smul);
         reader.TryReadStruct<uint>(lbl + Poe2.UiElement.Flags, out var flags);
         var vis = (flags & (1u << Poe2.UiElement.FlagVisibleBit)) != 0;
         var (ux, uy) = RfUnscaledPos(reader, lbl, 0);
@@ -4331,8 +4366,8 @@ static int RunLootCursor(ProcessHandle process, MemoryReader reader)
 
     (float x, float y, float w, float h, bool ok) Rect(nint el)
     {
-        reader.TryReadStruct<byte>(el + 0x18A, out var sidx);
-        reader.TryReadStruct<float>(el + 0x130, out var smul);
+        reader.TryReadStruct<byte>(el + Poe2.UiElement.ScaleIndex, out var sidx);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMul, out var smul);
         reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw);
         reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
         var (ux, uy) = RfUnscaledPos(reader, el, 0);
@@ -4783,8 +4818,8 @@ static int RunItemHover(ProcessHandle process, MemoryReader reader, int secs)
     // Same UiElement screen-rect projection as --lootcursor / the overlay.
     (float x, float y, float w, float h, bool ok) Rect(nint el)
     {
-        reader.TryReadStruct<byte>(el + 0x18A, out var sidx);
-        reader.TryReadStruct<float>(el + 0x130, out var smul);
+        reader.TryReadStruct<byte>(el + Poe2.UiElement.ScaleIndex, out var sidx);
+        reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMul, out var smul);
         reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw);
         reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
         var (ux, uy) = RfUnscaledPos(reader, el, 0);
@@ -6436,7 +6471,7 @@ static int RunAtlasNodes2(ProcessHandle process, MemoryReader reader)
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain (in game?)."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var trueRoot = SafePtr(reader, uiRoot + 0xB8);            // notes: true UI root = *(UiRoot+0xB8)
     var root = trueRoot != 0 ? trueRoot : uiRoot;
     Console.WriteLine($"InGameState 0x{igs:X}  UiRoot 0x{uiRoot:X}  trueRoot 0x{root:X}");
@@ -6502,11 +6537,11 @@ static int RunAtlasNodes2(ProcessHandle process, MemoryReader reader)
             reader.TryReadStruct<byte>(el + 0x32E, out var biome);
             reader.TryReadStruct<byte>(el + 0x32F, out var flags);
             reader.TryReadStruct<uint>(el + 0x339, out var compl);
-            reader.TryReadStruct<float>(el + 0x118, out var px);
-            reader.TryReadStruct<float>(el + 0x11C, out var py);
-            reader.TryReadStruct<float>(el + 0x288, out var sw);
-            reader.TryReadStruct<float>(el + 0x28C, out var sh);
-            reader.TryReadStruct<uint>(el + 0x180, out var fl);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var px);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var py);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
+            reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var fl);
             Console.WriteLine($"  0x{el:X}  id={id,-10} content={content,-10} state={state} biome={biome,-2} " +
                 $"flags=0x{flags:X2} compl={compl,-4} pos=({px:F0},{py:F0}) size=({sw:F0}x{sh:F0}) shown={((fl >> 0x0B) & 1)}");
         }
@@ -6705,7 +6740,7 @@ static int RunAtlasAnyHover(ProcessHandle process, MemoryReader reader)
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var root = SafePtr(reader, uiRoot + 0xB8) is var tr && tr != 0 ? tr : uiRoot;
 
     var queue = new Queue<nint>(); queue.Enqueue(root);
@@ -6723,20 +6758,20 @@ static int RunAtlasAnyHover(ProcessHandle process, MemoryReader reader)
     Console.WriteLine($"watching {els.Count} elements' +0x180 flags. Hover atlas MAP NODES slowly. Ctrl+C to stop.\n");
     var arr = els.ToArray();
     var prev = new uint[arr.Length];
-    for (var i = 0; i < arr.Length; i++) { reader.TryReadStruct<uint>(arr[i] + 0x180, out var f); prev[i] = f; }
+    for (var i = 0; i < arr.Length; i++) { reader.TryReadStruct<uint>(arr[i] + Poe2.UiElement.Flags, out var f); prev[i] = f; }
 
     while (true)
     {
         for (var i = 0; i < arr.Length; i++)
         {
-            if (!reader.TryReadStruct<uint>(arr[i] + 0x180, out var f) || f == prev[i]) continue;
+            if (!reader.TryReadStruct<uint>(arr[i] + Poe2.UiElement.Flags, out var f) || f == prev[i]) continue;
             var el = arr[i];
             var vt = SafePtr(reader, el);
             reader.TryReadStruct<uint>(el + 0x300, out var id);
             reader.TryReadStruct<uint>(el + 0x310, out var content);
             reader.TryReadStruct<byte>(el + 0x32E, out var biome);
-            reader.TryReadStruct<float>(el + 0x118, out var px); reader.TryReadStruct<float>(el + 0x11C, out var py);
-            reader.TryReadStruct<float>(el + 0x288, out var sw); reader.TryReadStruct<float>(el + 0x28C, out var sh);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var px); reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var py);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw); reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
             Console.WriteLine($"[flip] 0x{el:X} vt=0x{vt:X} flags 0x{prev[i]:X8}->0x{f:X8} id={id} content={content} biome={biome} pos=({px:F0},{py:F0}) size=({sw:F0}x{sh:F0})");
             prev[i] = f;
         }
@@ -6754,7 +6789,7 @@ static int RunAtlasMapName(ProcessHandle process, MemoryReader reader, int maxDi
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var root = SafePtr(reader, uiRoot + 0xB8) is var tr && tr != 0 ? tr : uiRoot;
 
     var queue = new Queue<nint>(); queue.Enqueue(root);
@@ -6826,7 +6861,7 @@ static int RunAtlasHoverFlag(ProcessHandle process, MemoryReader reader, nint se
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var root = SafePtr(reader, uiRoot + 0xB8) is var tr && tr != 0 ? tr : uiRoot;
 
     var queue = new Queue<nint>(); queue.Enqueue(root);
@@ -6856,19 +6891,19 @@ static int RunAtlasHoverFlag(ProcessHandle process, MemoryReader reader, nint se
     var prevFlags = new Dictionary<nint, uint>();
     var prevState = new Dictionary<nint, uint>();
     foreach (var el in els)
-    { reader.TryReadStruct<uint>(el + 0x180, out var f); prevFlags[el] = f; reader.TryReadStruct<uint>(el + 0x32C, out var s); prevState[el] = s; }
+    { reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var f); prevFlags[el] = f; reader.TryReadStruct<uint>(el + 0x32C, out var s); prevState[el] = s; }
 
     while (true)
     {
         foreach (var el in els)
         {
-            reader.TryReadStruct<uint>(el + 0x180, out var f);
+            reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var f);
             reader.TryReadStruct<uint>(el + 0x32C, out var s);
             if (f != prevFlags[el] || s != prevState[el])
             {
                 reader.TryReadStruct<uint>(el + 0x300, out var id);
                 reader.TryReadStruct<byte>(el + 0x32E, out var biome);
-                reader.TryReadStruct<float>(el + 0x118, out var px); reader.TryReadStruct<float>(el + 0x11C, out var py);
+                reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var px); reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var py);
                 Console.WriteLine($"[hover] 0x{el:X} id={id} biome={biome} pos=({px:F0},{py:F0})  flags 0x{prevFlags[el]:X8}->0x{f:X8}  state 0x{prevState[el]:X8}->0x{s:X8}");
                 prevFlags[el] = f; prevState[el] = s;
             }
@@ -6886,7 +6921,7 @@ static int RunAtlasCanvas(ProcessHandle process, MemoryReader reader, nint seedV
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var root = SafePtr(reader, uiRoot + 0xB8) is var tr && tr != 0 ? tr : uiRoot;
 
     // BFS to find the biome-decoration class (biome 0..12 varies, 40×40), then its parent = canvas.
@@ -6941,10 +6976,10 @@ static int RunAtlasCanvas(ProcessHandle process, MemoryReader reader, nint seedV
             reader.TryReadStruct<uint>(el + 0x310, out var content);
             reader.TryReadStruct<byte>(el + 0x32E, out var biome);
             reader.TryReadStruct<byte>(el + 0x32F, out var flags);
-            reader.TryReadStruct<float>(el + 0x118, out var px);
-            reader.TryReadStruct<float>(el + 0x11C, out var py);
-            reader.TryReadStruct<float>(el + 0x288, out var sw);
-            reader.TryReadStruct<float>(el + 0x28C, out var sh);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var px);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var py);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
             Console.WriteLine($"      0x{el:X} id={id} content={content} biome={biome} flags=0x{flags:X2} pos=({px:F0},{py:F0}) size=({sw:F0}x{sh:F0})");
         }
     }
@@ -6961,7 +6996,7 @@ static int RunAtlasXform(ProcessHandle process, MemoryReader reader)
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var root = SafePtr(reader, uiRoot + 0xB8) is var tr && tr != 0 ? tr : uiRoot;
 
     // BFS, group by vtable, pick the atlas-node class (most distinct nonzero biomes among instances).
@@ -6999,9 +7034,9 @@ static int RunAtlasXform(ProcessHandle process, MemoryReader reader)
     Console.WriteLine($"ancestor chain (node → root), {chain.Count} levels:");
     foreach (var (a, i) in chain.Select((a, i) => (a, i)))
     {
-        reader.TryReadStruct<float>(a + 0x118, out var rx); reader.TryReadStruct<float>(a + 0x11C, out var ry);
-        reader.TryReadStruct<float>(a + 0x130, out var scale);
-        reader.TryReadStruct<float>(a + 0x288, out var sw); reader.TryReadStruct<float>(a + 0x28C, out var sh);
+        reader.TryReadStruct<float>(a + Poe2.UiElement.RelativePos, out var rx); reader.TryReadStruct<float>(a + Poe2.UiElement.RelativePos + 4, out var ry);
+        reader.TryReadStruct<float>(a + Poe2.UiElement.LocalScaleMul, out var scale);
+        reader.TryReadStruct<float>(a + Poe2.UiElement.SizeW, out var sw); reader.TryReadStruct<float>(a + Poe2.UiElement.SizeH, out var sh);
         Console.WriteLine($"  [{i,2}] 0x{a:X} vt=0x{SafePtr(reader, a):X} relPos=({rx:F1},{ry:F1}) scale={scale:G5} size=({sw:F0}x{sh:F0})");
     }
     Console.WriteLine("\nNow ZOOM the atlas in/out. Watching relPos(+0x118) AND scale(+0x130) per ancestor.");
@@ -7014,8 +7049,8 @@ static int RunAtlasXform(ProcessHandle process, MemoryReader reader)
         for (var i = 0; i < chain.Count; i++)
         {
             var a = chain[i];
-            reader.TryReadStruct<float>(a + 0x118, out var rx); reader.TryReadStruct<float>(a + 0x11C, out var ry);
-            reader.TryReadStruct<float>(a + 0x130, out var sc);
+            reader.TryReadStruct<float>(a + Poe2.UiElement.RelativePos, out var rx); reader.TryReadStruct<float>(a + Poe2.UiElement.RelativePos + 4, out var ry);
+            reader.TryReadStruct<float>(a + Poe2.UiElement.LocalScaleMul, out var sc);
             if (prev.TryGetValue(a, out var old) &&
                 (MathF.Abs(old.rx - rx) > 0.5f || MathF.Abs(old.ry - ry) > 0.5f || MathF.Abs(old.sc - sc) > 0.001f))
                 Console.WriteLine($"  [{i,2}] 0x{a:X} relPos ({old.rx:F1},{old.ry:F1})->({rx:F1},{ry:F1})  scale {old.sc:F4}->{sc:F4}");
@@ -7038,7 +7073,7 @@ static int RunAtlasProbe(ProcessHandle process, MemoryReader reader)
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain (in game?)."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var root = SafePtr(reader, uiRoot + 0xB8) is var tr && tr != 0 ? tr : uiRoot;
     Console.WriteLine("ATLAS PROJECTION PROBE — recovery + validation\n==============================================");
 
@@ -7068,7 +7103,7 @@ static int RunAtlasProbe(ProcessHandle process, MemoryReader reader)
         foreach (var el in list.Take(400))
         {
             if (reader.TryReadStruct<byte>(el + 0x32E, out var b) && b is >= 1 and <= 12) biomes.Add(b);
-            if (reader.TryReadStruct<float>(el + 0x288, out var sw) && reader.TryReadStruct<float>(el + 0x28C, out var sh)) szs.Add((sw, sh));
+            if (reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw) && reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh)) szs.Add((sw, sh));
         }
         var modal = szs.GroupBy(s => ((int)s.Item1, (int)s.Item2)).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key ?? (0, 0);
         ranked.Add((vt, list.Count, biomes.Count, modal.Item1, modal.Item2));
@@ -7095,7 +7130,7 @@ static int RunAtlasProbe(ProcessHandle process, MemoryReader reader)
         var vcur = canvas.Key; var vguard = 0; var visible = true; var sbv = new System.Text.StringBuilder();
         while (vcur != 0 && vguard++ < 16)
         {
-            reader.TryReadStruct<uint>(vcur + 0x180, out var fl);
+            reader.TryReadStruct<uint>(vcur + Poe2.UiElement.Flags, out var fl);
             var bit = ((fl >> 0x0B) & 1) != 0;
             sbv.Append($"0x{vcur:X}[fl=0x{fl:X} vis={(bit ? 1 : 0)}] → ");
             if (!bit) { visible = false; }
@@ -7112,10 +7147,10 @@ static int RunAtlasProbe(ProcessHandle process, MemoryReader reader)
     var scales = new List<float>(); var sizes = new List<(float, float)>(); var ids = new HashSet<uint>(); var biomeHist = new Dictionary<int, int>();
     foreach (var el in sample)
     {
-        if (reader.TryReadStruct<float>(el + 0x118, out var rx) && reader.TryReadStruct<float>(el + 0x11C, out var ry) && float.IsFinite(rx) && float.IsFinite(ry))
+        if (reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var rx) && reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var ry) && float.IsFinite(rx) && float.IsFinite(ry))
         { finiteRel++; relSet.Add(((int)rx, (int)ry)); }
-        if (reader.TryReadStruct<float>(el + 0x130, out var sc) && sc > 0.01f && sc < 4f) scales.Add(sc);
-        if (reader.TryReadStruct<float>(el + 0x288, out var sw) && reader.TryReadStruct<float>(el + 0x28C, out var sh)) sizes.Add((sw, sh));
+        if (reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMul, out var sc) && sc > 0.01f && sc < 4f) scales.Add(sc);
+        if (reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw) && reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh)) sizes.Add((sw, sh));
         if (reader.TryReadStruct<uint>(el + 0x300, out var id)) ids.Add(id);
         if (reader.TryReadStruct<byte>(el + 0x32E, out var bm)) biomeHist[bm] = biomeHist.GetValueOrDefault(bm) + 1;
     }
@@ -7135,8 +7170,8 @@ static int RunAtlasProbe(ProcessHandle process, MemoryReader reader)
     while (cur != 0 && guard++ < 16) { chain.Add(cur); var par = SafePtr(reader, cur + 0xB8); if (par == cur || par == 0) break; cur = par; }
     foreach (var (a, i) in chain.Select((a, i) => (a, i)))
     {
-        reader.TryReadStruct<float>(a + 0x118, out var rx); reader.TryReadStruct<float>(a + 0x11C, out var ry);
-        reader.TryReadStruct<float>(a + 0x130, out var sc); reader.TryReadStruct<float>(a + 0x288, out var sw); reader.TryReadStruct<float>(a + 0x28C, out var sh);
+        reader.TryReadStruct<float>(a + Poe2.UiElement.RelativePos, out var rx); reader.TryReadStruct<float>(a + Poe2.UiElement.RelativePos + 4, out var ry);
+        reader.TryReadStruct<float>(a + Poe2.UiElement.LocalScaleMul, out var sc); reader.TryReadStruct<float>(a + Poe2.UiElement.SizeW, out var sw); reader.TryReadStruct<float>(a + Poe2.UiElement.SizeH, out var sh);
         Console.WriteLine($"    [{i,2}] 0x{a:X} relPos=({rx:F1},{ry:F1}) scale={sc:G5} size=({sw:F0}x{sh:F0})");
     }
 
@@ -7339,7 +7374,7 @@ static int RunAtlasCurrent(ProcessHandle process, MemoryReader reader)
 
     // Identify the HOVERED node (cursor inverse-projected into canvas/relPos units), like the F10 inspector.
     var scales = new List<float>();
-    foreach (var el in nodes) if (reader.TryReadStruct<float>(el + 0x130, out var sc) && sc is > 0.01f and < 4f) scales.Add(sc);
+    foreach (var el in nodes) if (reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMul, out var sc) && sc is > 0.01f and < 4f) scales.Add(sc);
     scales.Sort(); float zoom = scales.Count > 0 ? scales[scales.Count / 2] : 0.85f;
     int winH = Win.GetSystemMetrics(1); if (winH <= 0) winH = 1080;
     float pscale = winH / 1600f * zoom; if (pscale < 1e-4f) pscale = 1f;
@@ -7348,8 +7383,8 @@ static int RunAtlasCurrent(ProcessHandle process, MemoryReader reader)
     nint hovered = 0; double bIn = 1e18, bAny = 1e18; nint hoverAny = 0;
     foreach (var el in nodes)
     {
-        if (!reader.TryReadStruct<float>(el + 0x118, out var rx) || !reader.TryReadStruct<float>(el + 0x11C, out var ry)) continue;
-        reader.TryReadStruct<float>(el + 0x288, out var w); reader.TryReadStruct<float>(el + 0x28C, out var h);
+        if (!reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var rx) || !reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var ry)) continue;
+        reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var w); reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var h);
         double dx = curX - rx, dy = curY - ry, d = dx * dx + dy * dy;
         if (d < bAny) { bAny = d; hoverAny = el; }
         double hw = (w > 1 ? w : 40) * 0.5, hh = (h > 1 ? h : 40) * 0.5;
@@ -7427,7 +7462,7 @@ static int RunAtlasCurrent(ProcessHandle process, MemoryReader reader)
         nint hv2 = 0; double best = 1e18;
         foreach (var el in nodes)
         {
-            if (!reader.TryReadStruct<float>(el + 0x118, out var rx) || !reader.TryReadStruct<float>(el + 0x11C, out var ry)) continue;
+            if (!reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos, out var rx) || !reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var ry)) continue;
             double dx = hx - rx, dy = hy - ry, d = dx * dx + dy * dy;
             if (d < best) { best = d; hv2 = el; }
         }
@@ -7479,8 +7514,8 @@ static int RunAtlasMarker(ProcessHandle process, MemoryReader reader)
     foreach (var m in markers)
     {
         var node = SafePtr(reader, m + 0x300);
-        reader.TryReadStruct<float>(m + 0x118, out var mrx); reader.TryReadStruct<float>(m + 0x11C, out var mry);
-        reader.TryReadStruct<uint>(m + 0x180, out var fl);
+        reader.TryReadStruct<float>(m + Poe2.UiElement.RelativePos, out var mrx); reader.TryReadStruct<float>(m + Poe2.UiElement.RelativePos + 4, out var mry);
+        reader.TryReadStruct<uint>(m + Poe2.UiElement.Flags, out var fl);
         Console.WriteLine($"  marker 0x{m:X}  vt 0x{SafePtr(reader, m):X} (mod +0x{(long)SafePtr(reader, m) - (long)process.MainModuleBase:X})  relPos=({mrx:F0},{mry:F0})  visBit={((fl >> 0x0B) & 1)}");
         Console.WriteLine($"      → current node 0x{node:X}  grid {GridOf(node)}  code \"{CodeOf(node)}\"");
         // Ancestry: walk Parent (+0xB8) and show child indices, to find a stable path (canvas relation).
@@ -7567,7 +7602,7 @@ static int RunAtlasFindCur(ProcessHandle process, MemoryReader reader)
 // ── Shared: locate the atlas-node class + canvas (scored on size≈40×40 + biome-spread + count). ──
 static (nint vt, nint canvas, List<nint> nodes) FindAtlasNodeClass(MemoryReader reader, nint igs)
 {
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var root = SafePtr(reader, uiRoot + 0xB8) is var tr && tr != 0 ? tr : uiRoot;
     var queue = new Queue<nint>(); queue.Enqueue(root);
     var visited = new HashSet<nint>();
@@ -7588,7 +7623,7 @@ static (nint vt, nint canvas, List<nint> nodes) FindAtlasNodeClass(MemoryReader 
         if (list.Count < 50) continue;
         var biomes = new HashSet<int>(); var szs = new List<float>();
         foreach (var el in list.Take(400))
-        { if (reader.TryReadStruct<byte>(el + 0x32E, out var b) && b is >= 1 and <= 12) biomes.Add(b); if (reader.TryReadStruct<float>(el + 0x288, out var sw)) szs.Add(sw); }
+        { if (reader.TryReadStruct<byte>(el + 0x32E, out var b) && b is >= 1 and <= 12) biomes.Add(b); if (reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw)) szs.Add(sw); }
         var modalW = szs.GroupBy(s => (int)s).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key ?? 0;
         ranked.Add((vt, list.Count, biomes.Count, modalW));
     }
@@ -7670,7 +7705,7 @@ static int RunAtlasResolve(ProcessHandle process, MemoryReader reader)
     if (!Win.GetCursorPos(out var cur)) { Console.Error.WriteLine("no cursor."); return 1; }
     int winH = Win.GetSystemMetrics(1); if (winH <= 0) winH = 1080;
     float uiscale = winH / 1600f;
-    var scales = nodes.Select(n => { reader.TryReadStruct<float>(n + 0x130, out var s); return s; }).Where(s => s > 0.01f).OrderBy(s => s).ToList();
+    var scales = nodes.Select(n => { reader.TryReadStruct<float>(n + Poe2.UiElement.LocalScaleMul, out var s); return s; }).Where(s => s > 0.01f).OrderBy(s => s).ToList();
     float zoom = scales.Count > 0 ? scales[scales.Count / 2] : 0.85f;
     float factor = uiscale * zoom, off = factor * 20f;
     // Pick the nearest DATA node (+0x310 populated) — the empty display twins are skipped. Fall back to
@@ -7678,7 +7713,7 @@ static int RunAtlasResolve(ProcessHandle process, MemoryReader reader)
     nint el = 0, elAny = 0; double bd = 1e18, bdAny = 1e18;
     foreach (var n in nodes)
     {
-        reader.TryReadStruct<float>(n + 0x118, out var rx); reader.TryReadStruct<float>(n + 0x11C, out var ry);
+        reader.TryReadStruct<float>(n + Poe2.UiElement.RelativePos, out var rx); reader.TryReadStruct<float>(n + Poe2.UiElement.RelativePos + 4, out var ry);
         double d = (factor * rx + off - cur.X) * (factor * rx + off - cur.X) + (factor * ry + off - cur.Y) * (factor * ry + off - cur.Y);
         if (d < bdAny) { bdAny = d; elAny = n; }
         if (SafePtr(reader, n + 0x310) != 0 && d < bd) { bd = d; el = n; }
@@ -7845,8 +7880,8 @@ static int RunAtlasContent(ProcessHandle process, MemoryReader reader)
         {
             var ch = SafePtr(reader, cf + (nint)(i * 8)); if (ch == 0) continue;
             reader.TryReadStruct<uint>(ch + 0x300, out var ci300); reader.TryReadStruct<uint>(ch + 0x310, out var ci310);
-            reader.TryReadStruct<float>(ch + 0x288, out var cw); reader.TryReadStruct<float>(ch + 0x28C, out var chh);
-            reader.TryReadStruct<float>(ch + 0x118, out var crx); reader.TryReadStruct<float>(ch + 0x11C, out var cry);
+            reader.TryReadStruct<float>(ch + Poe2.UiElement.SizeW, out var cw); reader.TryReadStruct<float>(ch + Poe2.UiElement.SizeH, out var chh);
+            reader.TryReadStruct<float>(ch + Poe2.UiElement.RelativePos, out var crx); reader.TryReadStruct<float>(ch + Poe2.UiElement.RelativePos + 4, out var cry);
             if (ci300 != 0 || ci310 != 0)
                 Console.WriteLine($"      child[{i}] 0x{ch:X} +0x300={ci300} +0x310={ci310} size={cw:F0}x{chh:F0} relPos=({crx:F0},{cry:F0})");
         }
@@ -7859,12 +7894,12 @@ static int RunAtlasContent(ProcessHandle process, MemoryReader reader)
     {
         int winH = Win.GetSystemMetrics(1); if (winH <= 0) winH = 1080;
         float uiscale = winH / 1600f;
-        reader.TryReadStruct<float>(nodes[0] + 0x130, out var zoom); if (zoom < 0.01f) zoom = 0.85f;
+        reader.TryReadStruct<float>(nodes[0] + Poe2.UiElement.LocalScaleMul, out var zoom); if (zoom < 0.01f) zoom = 0.85f;
         float factor = uiscale * zoom, off = factor * 20f;
         var near = new List<(double d, nint el, float rx, float ry)>();
         foreach (var n in nodes)
         {
-            reader.TryReadStruct<float>(n + 0x118, out var rx); reader.TryReadStruct<float>(n + 0x11C, out var ry);
+            reader.TryReadStruct<float>(n + Poe2.UiElement.RelativePos, out var rx); reader.TryReadStruct<float>(n + Poe2.UiElement.RelativePos + 4, out var ry);
             double sx = factor * rx + off, sy = factor * ry + off, d = Math.Sqrt((sx - cur.X) * (sx - cur.X) + (sy - cur.Y) * (sy - cur.Y));
             if (d <= 80) near.Add((d, n, rx, ry));
         }
@@ -7874,7 +7909,7 @@ static int RunAtlasContent(ProcessHandle process, MemoryReader reader)
         {
             reader.TryReadStruct<uint>(el + 0x300, out var id32); reader.TryReadStruct<byte>(el + 0x32E, out var biome);
             reader.TryReadStruct<byte>(el + 0x32F, out var fl); reader.TryReadStruct<byte>(el + 0x339, out var comp);
-            reader.TryReadStruct<float>(el + 0x288, out var sw); reader.TryReadStruct<float>(el + 0x28C, out var sh);
+            reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var sw); reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var sh);
             Console.WriteLine($"  ── el 0x{el:X} dist {d:F0}px id={id32} biome={biome} flags=0x{fl:X2} compl={comp} size={sw:F0}x{sh:F0} relPos=({rx:F0},{ry:F0})");
             var vb = SafePtr(reader, el + 0x350); reader.TryReadStruct<nint>(el + 0x358, out var ve);
             var vlen = (vb != 0 && (long)ve > (long)vb) ? ((long)ve - (long)vb) : 0;
@@ -7887,7 +7922,7 @@ static int RunAtlasContent(ProcessHandle process, MemoryReader reader)
             for (long i = 0; i < ccount && i < 10; i++)
             {
                 var ch = SafePtr(reader, cf + (nint)(i * 8)); if (ch == 0) continue;
-                reader.TryReadStruct<float>(ch + 0x288, out var cw); reader.TryReadStruct<float>(ch + 0x118, out var crx); reader.TryReadStruct<float>(ch + 0x11C, out var cry);
+                reader.TryReadStruct<float>(ch + Poe2.UiElement.SizeW, out var cw); reader.TryReadStruct<float>(ch + Poe2.UiElement.RelativePos, out var crx); reader.TryReadStruct<float>(ch + Poe2.UiElement.RelativePos + 4, out var cry);
                 var strs = SniffPointerStrings(reader, ch);
                 if (strs.Count > 0) Console.WriteLine($"       child[{i}] 0x{ch:X} w={cw:F0} relPos=({crx:F0},{cry:F0}): {string.Join("  ", strs)}");
             }
@@ -7906,7 +7941,7 @@ static int RunAtlasWatch(ProcessHandle process, MemoryReader reader)
 {
     var (_, igs, _, _) = ResolveChain(process, reader);
     if (igs == 0) { Console.Error.WriteLine("no chain."); return 1; }
-    var uiRoot = SafePtr(reader, igs + 0x2F0);
+    var uiRoot = SafePtr(reader, igs + Poe2.InGameState.UiRoot);
     var htC = SafePtr(reader, uiRoot + 0x7D8);
     var hoverVtable = process.MainModuleBase + 0x2D707D8;
     Console.WriteLine($"UiRoot 0x{uiRoot:X}  htContainer 0x{htC:X}  hoverVtable 0x{hoverVtable:X}");
@@ -7937,8 +7972,8 @@ static int RunAtlasWatch(ProcessHandle process, MemoryReader reader)
             reader.TryReadStruct<byte>(hov + 0x32E, out var biome);
             reader.TryReadStruct<byte>(hov + 0x32F, out var flags);
             reader.TryReadStruct<byte>(hov + 0x339, out var compl);
-            reader.TryReadStruct<float>(hov + 0x118, out var px);
-            reader.TryReadStruct<float>(hov + 0x11C, out var py);
+            reader.TryReadStruct<float>(hov + Poe2.UiElement.RelativePos, out var px);
+            reader.TryReadStruct<float>(hov + Poe2.UiElement.RelativePos + 4, out var py);
             Console.WriteLine($"[tracker +0x{t:X}] hov=0x{hov:X} el={isEl} vtable=0x{SafePtr(reader, hov):X}");
             if (isEl) Console.WriteLine($"    node? id={id} content={content} state={state} biome={biome} flags=0x{flags:X2}(unlk={flags & 1} vis={(flags >> 1) & 1}) compl={compl} pos=({px:F0},{py:F0})");
             if (Printable(meta)) Console.WriteLine($"    meta='{meta}'");
@@ -8282,7 +8317,7 @@ static int RunFindMap(ProcessHandle process, MemoryReader reader)
         {
             reader.TryReadStruct<uint>(cur + 0x88, out var f88);
             reader.TryReadStruct<uint>(cur + 0xA8, out var fA8);
-            reader.TryReadStruct<uint>(cur + 0x180, out var f180); // ← current validated Flags offset
+            reader.TryReadStruct<uint>(cur + Poe2.UiElement.Flags, out var f180); // ← current validated Flags offset
             reader.TryReadStruct<uint>(cur + 0x190, out var f190);
             reader.TryReadStruct<uint>(cur + 0x1B8, out var f1B8);
             Console.WriteLine($"  0x{cur:X16}  [+0x180]={f180:X8} (bit0x0B={((f180 >> 0x0B) & 1)})  [+0x88]={f88:X8} [+0xA8]={fA8:X8} [+0x190]={f190:X8} [+0x1B8]={f1B8:X8}");

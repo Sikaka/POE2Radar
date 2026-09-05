@@ -403,19 +403,18 @@ public sealed class Poe2Atlas
             _reader.TryReadStruct<float>(el + Poe2.UiElement.RelativePos + 4, out var y);
             _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var w);
             _reader.TryReadStruct<float>(el + Poe2.UiElement.SizeH, out var h);
-            _reader.TryReadStruct<float>(el + 0x130, out var scale);
+            _reader.TryReadStruct<float>(el + Poe2.UiElement.LocalScaleMul, out var scale);
             _reader.TryReadStruct<int>(el + Poe2.AtlasNode.GridPos, out var gridX);     // StdTuple2D<int> atlas grid coord
             _reader.TryReadStruct<int>(el + Poe2.AtlasNode.GridPos + 4, out var gridY); // → the routing graph key
             _reader.TryReadStruct<uint>(el + Poe2.UiElement.Flags, out var uiFlags);
             var visible = ((uiFlags >> Poe2.UiElement.FlagVisibleBit) & 1) != 0;
-            // The node's content/icon TYPE lives on a nested sigil-icon child (content int 1..~50);
-            // walk first-children a few levels to find it. Lets us classify + match nodes to in-game icons.
-            var iconType = 0; var d = el;
-            for (var lvl = 0; lvl < 5 && d != 0; lvl++)
-            {
-                if (_reader.TryReadStruct<uint>(d + Poe2.AtlasNode.Content, out var c) && c is > 0 and < 256) { iconType = (int)c; break; }
-                d = Ptr(Ptr(d + Poe2.UiElement.Children)); // first child = *(*(el+Children))
-            }
+            // Content/icon TYPE: DISABLED for the 2026-09-05 build. The slot this walk reads
+            // (AtlasNode.Content = +0x310) now holds GridPos, so a node at GridX 23 would report
+            // iconType 23 — a fabricated icon rather than a missing one. Reading a repurposed field
+            // is worse than reading nothing, so emit 0 until the real content field is re-discovered.
+            // (The fork's table marks this unresolved too; --atlas-gridscan finds no content vector on
+            // either the +0x300 row or the nodeData struct.)
+            var iconType = 0;
             // Accessible/completed status: the GameHelper-validated deeper model
             // *(node+DataStorage)+DataModel → status byte +0x2CF (bit0 accessible, bit1 completed). This is
             // the route SOURCE frontier ("maps you can run right now"). Cheap (2 derefs + 1 byte).
@@ -725,6 +724,29 @@ public sealed class Poe2Atlas
     /// the headline content (row+0x38 → content row +0x30 name, e.g. "Powerful Map Boss") plus the league
     /// mechanics harvested from the stats sub-struct (row+0x50): stat ids "map_atlas_node_has_&lt;x&gt;"
     /// → "X" (Breach, Delirium, …). Validated live 2026-06-07; re-confirm offsets via Research --atlas-resolve.</summary>
+    /// <summary>
+    /// Read a node's ROLLED map code ("MapSinkhole") from the node-DATA struct.
+    /// <para>The value sits behind a short pointer chain whose depth varies per node, so walk up to a
+    /// few hops and stop at the first readable UTF-16 "Map…" string. ✓ live 2026-09-05: 400/400 nodes
+    /// resolved, 92 distinct maps (Research <c>--atlas-gridscan</c>).</para>
+    /// </summary>
+    private string ReadRolledMapCode(nint el)
+    {
+        var storage = Ptr(el + Poe2.AtlasNode.DataStorage);
+        if (storage == 0) return "";
+        var nodeData = Ptr(storage + Poe2.AtlasNode.DataModel);
+        if (nodeData == 0) return "";
+
+        var cur = nodeData + Poe2.AtlasNode.DataMapId;
+        for (var hop = 0; hop < 4 && cur != 0; hop++)
+        {
+            var txt = _reader.ReadStringUtf16(cur, 64);
+            if (txt.StartsWith("Map", StringComparison.Ordinal)) return txt;
+            cur = Ptr(cur);
+        }
+        return "";
+    }
+
     private (string code, string map, string[] content, AtlasMapData.MapMeta meta) ResolveTags(nint el)
     {
         // Map NAME: node +0x300 → EndgameMaps row; its +0x00 → the WorldAreas row, which holds
@@ -734,21 +756,33 @@ public sealed class Poe2Atlas
         // 2026-06-16 (Research --atlas-mapname). Prettify(code) stays only as a fallback. The raw code is
         // returned too (stable, never localized) so the F10 inspector / dashboard can show it.
         string code = "", name = "";
-        var mapRow = Ptr(el + 0x300);
-        if (mapRow != 0)
+
+        // PRIMARY (✓ live 2026-09-05): the ROLLED map code comes from the node-DATA struct,
+        // *(*(node+DataStorage)+DataModel) + DataMapId, behind a short pointer chain ending in a
+        // UTF-16 "MapXxx". Verified across 400 nodes / 92 distinct maps (MapSinkhole, MapVaalFactory,
+        // MapRugosa, …). The old el+0x300 path is NOT a row on the real node class in this build, so
+        // it silently produced no code — which is what left every node unclassified.
+        code = ReadRolledMapCode(el);
+
+        if (code.Length == 0)
         {
-            var w = Ptr(mapRow);
-            var direct = w != 0 ? _reader.ReadStringUtf16(w, 64) : "";
-            if (direct.StartsWith("Map", StringComparison.Ordinal))
+            // LEGACY fallback: el+0x300 → EndgameMaps row → WorldAreas row {Id, localized name}.
+            var mapRow = Ptr(el + Poe2.AtlasNode.MapNodeId);
+            if (mapRow != 0)
             {
-                code = direct;                                  // legacy layout: +0x300 row → code string directly
-            }
-            else if (w != 0)
-            {
-                var idP = Ptr(w);                               // WorldAreas +0x00 → Id "MapXxx"
-                code = idP != 0 ? _reader.ReadStringUtf16(idP, 64) : "";
-                var nmP = Ptr(w + Poe2.AtlasMapRow.WorldAreaName); // WorldAreas +0x08 → localized name
-                name = nmP != 0 ? _reader.ReadStringUtf16(nmP, 64) : "";
+                var w = Ptr(mapRow);
+                var direct = w != 0 ? _reader.ReadStringUtf16(w, 64) : "";
+                if (direct.StartsWith("Map", StringComparison.Ordinal))
+                {
+                    code = direct;
+                }
+                else if (w != 0)
+                {
+                    var idP = Ptr(w);
+                    code = idP != 0 ? _reader.ReadStringUtf16(idP, 64) : "";
+                    var nmP = Ptr(w + Poe2.AtlasMapRow.WorldAreaName);
+                    name = nmP != 0 ? _reader.ReadStringUtf16(nmP, 64) : "";
+                }
             }
         }
         // Offline classification layer (atlas_maps.json): type/group/tags keyed by the internal MapId. Adds
@@ -882,26 +916,36 @@ public sealed class Poe2Atlas
                 if (n is > 0 and <= 16384) for (long k = 0; k < n; k++) queue.Enqueue(Ptr(first + (nint)(k * 8)));
             }
         }
-        // Score each candidate vtable on THREE signals so a stray biome-ish UI class can't win (a
-        // biome-spread-only pick mis-detected a 18×18 list element → the overlay read 0 nodes): the real
-        // atlas-node class is ~40×40, has biome spread ≥3, AND the most instances.
-        nint bestVt = 0; var bestCount = 0; var bestBiomes = 0;
-        nint fbVt = 0; var fbBiomes = 0;   // fallback: max biome-spread, in case sizes drift
+        // Score each candidate vtable on GRID POSITION, not biome or icon size.
+        //
+        // The previous scorer keyed on biome spread (0..12) plus a ~40×40 icon size. The 2026-09-05
+        // league patch killed both: biome at +0x32E is no longer an enum (bytes scatter 0..255) and the
+        // icons are now 103×103. With its primary signal dead the scorer fell through to the
+        // "max biome-spread" fallback, which picked a 5315-instance decorative class whose grid values
+        // collapse to 53 distinct — so the overlay resolved a canvas that was never visible and drew
+        // nothing. A detector must never key on a field that can drift to garbage while still reading.
+        //
+        // GridPos is the durable signature: every atlas node owns a DISTINCT (int,int) map coordinate in
+        // a small range. Real class = 512 instances / 512 distinct coords; the impostor = 4678 in-range
+        // but only 53 distinct. Ranking by distinct-coordinate count separates them by ~10x.
+        nint bestVt = 0; var bestDistinct = 0;
         foreach (var (vt, list) in byVtable)
         {
             if (list.Count < 50) continue;
-            var biomes = new HashSet<int>(); var widths = new Dictionary<int, int>();
-            foreach (var el in list.Take(400))
+            var coords = new HashSet<(int, int)>();
+            var inRange = 0;
+            foreach (var el in list)
             {
-                if (_reader.TryReadStruct<byte>(el + Poe2.AtlasNode.Biome, out var b) && b is >= 1 and <= 12) biomes.Add(b);
-                if (_reader.TryReadStruct<float>(el + Poe2.UiElement.SizeW, out var w)) { var iw = (int)w; widths[iw] = widths.GetValueOrDefault(iw) + 1; }
+                if (!_reader.TryReadStruct<int>(el + Poe2.AtlasNode.GridPos, out var gx)) continue;
+                if (!_reader.TryReadStruct<int>(el + Poe2.AtlasNode.GridPos + 4, out var gy)) continue;
+                if (gx is < -64 or > 64 || gy is < 0 or > 192) continue;
+                inRange++; coords.Add((gx, gy));
             }
-            if (biomes.Count > fbBiomes) { fbBiomes = biomes.Count; fbVt = vt; }
-            var modalW = widths.Count == 0 ? 0 : widths.OrderByDescending(k => k.Value).First().Key;
-            if (modalW is >= 28 and <= 56 && biomes.Count >= 3 && list.Count > bestCount) { bestCount = list.Count; bestVt = vt; bestBiomes = biomes.Count; }
+            // Require the coords to be genuinely per-node, not a handful of repeated values.
+            if (inRange < list.Count * 0.5 || coords.Count < 20) continue;
+            if (coords.Count > bestDistinct) { bestDistinct = coords.Count; bestVt = vt; }
         }
-        if (bestVt == 0) { bestVt = fbVt; bestBiomes = fbBiomes; }   // no ~40×40 class — fall back
-        if (bestVt == 0 || bestBiomes < 3) return false;
+        if (bestVt == 0) return false;
         _nodeVtable = bestVt;
         // The node-class elements also appear OUTSIDE the atlas (terrain props / minimap), so the
         // first one's parent isn't necessarily the node canvas. The real atlas canvas is the parent

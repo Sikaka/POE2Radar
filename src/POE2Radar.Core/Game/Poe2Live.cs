@@ -150,9 +150,22 @@ public sealed class Poe2Live
         if (areaInstance == _areaCodeFor) return _areaCode;
         _areaCodeFor = areaInstance;
         var info = Ptr(areaInstance + Poe2.AreaInstance.AreaInfoPtr);
-        var s = Ptr(info);
+        var s = Ptr(info + Poe2.AreaInfo.Code);
         _areaCode = s == 0 ? "" : _reader.ReadStringUtf16(s, 64);
         return _areaCode;
+    }
+
+    private string _areaName = ""; private nint _areaNameFor = -1;
+
+    /// <summary>Area display name (e.g. "Glacial Tarn"). Cached per area.</summary>
+    public string AreaName(nint areaInstance)
+    {
+        if (areaInstance == _areaNameFor) return _areaName;
+        _areaNameFor = areaInstance;
+        var info = Ptr(areaInstance + Poe2.AreaInstance.AreaInfoPtr);
+        var s = Ptr(info + Poe2.AreaInfo.Name);
+        _areaName = s == 0 ? "" : _reader.ReadStringUtf16(s, 64);
+        return _areaName;
     }
 
     private string _league = ""; private nint _leagueFor = -1;
@@ -1312,7 +1325,7 @@ public sealed class Poe2Live
     }
 
     /// <summary>Resolve the world-anchored ground-label container (the <c>ItemsOnGroundLabelElement</c>) by a
-    /// FLAGS-FINGERPRINT walk with backtracking from GameUi (<c>InGameState+0x2F0</c>), mirroring
+    /// FLAGS-FINGERPRINT walk with backtracking from GameUi (<c>InGameState+0x300</c>), mirroring
     /// <see cref="Poe2Runeforge"/>'s panel resolution — child indices drift per patch, the Flags "role" bits
     /// don't, so each hop matches <c>(flags &amp; ~visibleBit) == fingerprint</c> and keeps whichever branch
     /// bottoms out at the labels container. The container persists per area but its children populate/empty
@@ -1411,7 +1424,7 @@ public sealed class Poe2Live
         return _reader.TryReadStruct<byte>(c + Poe2.ChestComponent.OpenState, out var b) && b != 0;
     }
 
-    /// <summary>WorldToScreen matrix (16 floats, row-major) from Camera@InGameState+0x368. Null if unavailable.</summary>
+    /// <summary>WorldToScreen matrix (16 floats, row-major) from Camera@InGameState+0x378. Null if unavailable.</summary>
     public float[]? CameraMatrix(nint inGameState)
     {
         var cam = Ptr(inGameState + Poe2.InGameState.Camera);

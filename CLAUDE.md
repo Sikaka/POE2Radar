@@ -82,7 +82,17 @@ clearly gated — a personal QoL tool, not a headless bot.
   `/api/icons` — the icon library for the dashboard's SVG-preview shape pickers).
 - `Input/SendInputNative.cs` — scancode `SendInput` for auto-flask.
 
-**Research** (`src/POE2Radar.Research/Program.cs`) — probes: `--hp` (value-scan), `--vitals`
+**Research** (`src/POE2Radar.Research/Program.cs`) — **post-patch recovery starts here**:
+`--recover [--deep]` (relaxed AOB + structural GameState validation, then brute-forces
+InGameState→AreaInstance→LocalPlayer and prints the block shift), `--verify-fields` (re-locates the
+fields that DON'T move with that block — AreaInfo, area level/hash, entity maps, terrain, UiRoot,
+Camera — each by shape, marking which committed offsets still match), and `--map-watch` (toggle-diff
+to re-pin the UiElement visibility bit). Run those three in order after a patch before anything else.
+⚠ These hunts must NOT require 8-byte-aligned pointers: PoE2 stores raw pointers into string blobs
+and mid-buffer (WorldAreas row strings, terrain StdVector end pointers), so an alignment filter
+silently hides the very fields you are looking for.
+
+Other probes: `--hp` (value-scan), `--vitals`
 (dump the local player's Life component — what the configured Health/Mana/ES offsets read + every
 valid VitalStruct in the component; the per-patch re-validation for the auto-flask pools), `--chain`,
 `--entity`, `--find`/`--find-entities`/`--find-terrain`/`--find-map`, `--tiles`, `--rarity`,
@@ -109,28 +119,39 @@ is rescaled by liveZoom/calibZoom each frame. See `resources/atlas-research-note
 
 ## Key facts (validated live; re-verify per patch)
 
-- Chain: AOB "Game States" → GameState → InGameState (active state) → `AreaInstance @ +0x290` →
-  `LocalPlayer @ +0x5B8`.
-- AreaInstance: AreaInfo `+0xA0` (code), AreaLevel `+0xC4`, AreaHash `+0x11C`, AwakeEntities std::map
-  `+0x6D8` / Sleeping `+0x6E8`, TerrainStruct `+0x8B8` (walkable `+0xD0`, BytesPerRow `+0x130`). The
-  entity-map/player/terrain/ServerData block shifted +0x18 in the 2026-06-25 patch (validated live).
+- Chain: AOB "Game States" → GameState → InGameState (active state) → `AreaInstance @ +0x2A0` →
+  `LocalPlayer @ +0x5D0`. **The AOB pattern must NOT pin the trailing jnz displacement** — the
+  2026-09-05 league patch shifted it and killed the scan outright. Match `48 39 2D ?? ?? ?? ?? 0F 85`
+  only; that leaves ~3 candidate slots which `Bootstrap` disambiguates by validating the chain.
+- AreaInstance: AreaInfo `+0x98` (→ WorldAreas row: Code `+0x00`, Name `+0x08`, both raw UTF-16
+  pointers), AreaLevel `+0xBC`, AreaHash `+0x114`, AwakeEntities std::map `+0x6F0` / Sleeping `+0x700`,
+  TerrainStruct `+0x8D0` (inline, not a pointer; walkable `+0xD0`, BytesPerRow `+0x130`).
+  The entity-map/player/terrain/ServerData block shifted +0x10 in the 2026-09-05 league patch, but the
+  **header moved the other way (-0x08)** — do not assume one uniform shift. `+0xA0` still holds a valid
+  pointer, but to the WorldAreas.dat *file object*, not the row, so a stale AreaInfo offset fails
+  silently rather than nulling out.
 - Entity: Details `+0x08`, ComponentList `+0x10`; component map via ComponentLookUp StdBucket.
   Rarity = ObjectMagicProperties `+0x144`; hostility = Positioned.Reaction `+0x1E0` (friendly = bit
   pattern `(b&0x7F)==1`); grid = Render world `+0x138` / 10.87; Life HP `+0x1A8` / Mana `+0x1F8` / ES
   `+0x230`; Player name `+0x1B0`, level `+0x204`.
-- Map UI: UiRoot `InGameState +0x2F0`; UiElement Self `+0x08`, Children `+0x10`, Flags `+0x180`
-  (visible = bit `0x0B`); MapUiElement Shift `+0x368`, DefaultShift `+0x370` (= (0,-20)), Zoom `+0x3A8`.
-- Inventory (✓ live, Research `--inventory`): `AreaInstance +0x598` → ServerData → `+0x48` PlayerServerData
+- Map UI: UiRoot `InGameState +0x300`; Camera `+0x378`; MouseOver host `+0x310`. UiElement Self `+0x08`,
+  Children `+0x10` (both UNCHANGED), but **everything after Children shifted -0x18** in the 2026-09-05
+  league patch: Flags `+0x168` (visible = bit `0x0B`), RelativePos `+0x100`, LocalScaleMul `+0x118`,
+  SizeW/H `+0x270`/`+0x274`, Text `+0x378`. MapUiElement Shift `+0x350`, DefaultShift `+0x358`
+  (= (0,-20)), Zoom `+0x390`. Re-pin the visibility bit with `--map-watch` (toggle-diff) rather than by
+  eye: the map elements are the only ones whose DefaultShift is exactly (0,-20).
+- Inventory (✓ live, Research `--inventory`): `AreaInstance +0x5B0` → ServerData → `+0x48` PlayerServerData
   vec `[0]` → ServerDataStructure → `+0x320` PlayerInventories vec (InventoryArrayStruct stride `0x18`:
-  `+0x00` id, `+0x08` → InventoryStruct, `+0x10` = ptr−0x10 fingerprint). ServerData `+0x21E0` =
-  std::wstring **current league name** (✓ live 2026-06-22, Research `--league`) — verbatim
+  `+0x00` id, `+0x08` → InventoryStruct, `+0x10` = ptr−0x10 fingerprint). ServerData `+0x2160` =
+  std::wstring **current league name** (✓ live 2026-09-05, Research `--league`) — verbatim
   poe.ninja/poe2scout `Value` incl. the "HC " prefix (e.g. "HC Runes of Aldur"), so it auto-detects the
   HC vs SC price league. InventoryStruct: TotalBoxes(X,Y)
   `+0x150`, ItemList vec(ptr→InventoryItemStruct, len X·Y) `+0x170`. InventoryItemStruct: Item entity
   `+0x00`, Slot `+0x08`. Item = Entity; Mods rarity `+0x94`/identified `+0x90`, affix vecs Implicit `+0xA0`/
   Explicit `+0xB8`/Enchant `+0xD0` (ModArrayStruct stride `0x40`, `+0x28` → Mods.dat row → first qword →
   UTF-16 internal mod id); Stack count `+0x18`; RenderItem art `+0x28`.
-- **Still TBD:** camera world→screen matrix (for world-space nameplates); friendly area Name string.
+- **Still TBD:** camera world→screen matrix (for world-space nameplates). (Area Name is solved — see
+  AreaInfo `+0x08` above.)
 
 ## Releasing
 
